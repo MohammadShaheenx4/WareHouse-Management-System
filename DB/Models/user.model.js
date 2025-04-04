@@ -32,6 +32,10 @@ const userModel = sequelize.define('User', {
         type: DataTypes.ENUM('Admin', 'Customer', 'Supplier', 'DeliveryEmployee', 'WareHouseEmployee', 'HighLevelEmployee'),
         allowNull: false,
     },
+    sendCode: {
+        type: String,
+        default: null,
+    }
 }, {
     tableName: 'user', // Explicitly define the table name
     timestamps: false, // Disable createdAt & updatedAt if not needed

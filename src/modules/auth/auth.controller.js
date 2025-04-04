@@ -1,6 +1,10 @@
 import userModel from "../../../DB/Models/user.model.js";
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { nanoid, customAlphabet } from 'nanoid'
+import { json } from "sequelize";
+import { sendEmail } from "../../utils/sendEmail.js";
+import { DataTypes } from 'sequelize';
 
 
 export const register = async (req, res, next) => {
@@ -44,34 +48,35 @@ export const login = async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        // 1️⃣ Validate input
+        sendEmail();
+
         if (!email || !password) {
             return res.status(400).json({ message: "Email and password are required." });
         }
 
-        // 2️⃣ Check if user exists in DB
+
         const user = await userModel.findOne({ where: { email } });
         if (!user) {
             return res.status(401).json({ message: "Invalid email or password." });
         }
 
-        // 3️⃣ Check if user is active
+
         if (user.isActive !== 'Active') {
             return res.status(403).json({ message: "Account is not active. Contact admin." });
         }
 
-        // 4️⃣ Compare password with hashed password
+
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
             return res.status(401).json({ message: "Invalid email or password." });
         }
 
-        // 5️⃣ Generate JWT token
+
         const token = jwt.sign(
             { userId: user.userId, email: user.email, roleName: user.roleName },
             process.env.JWT_SECRET || 'shaheen');
 
-        // 6️⃣ Return success response with token
+
         return res.status(200).json({
             message: "Login successful!",
             token,
@@ -82,8 +87,96 @@ export const login = async (req, res) => {
             }
         });
 
+
+
     } catch (error) {
         console.error("Error during login:", error);
         return res.status(500).json({ message: "Internal Server Error" });
+    }
+};
+
+
+
+
+
+export const resetPassword = async (req, res) => {
+    const { email, code, newPassword } = req.body;
+
+    try {
+
+        if (email && !code && !newPassword) {
+
+            const generatedCode = customAlphabet('1234567890abcdefABCDEF', 5)();
+
+
+            const [updated] = await userModel.update(
+                { sendCode: generatedCode },
+                { where: { email: email } }
+            );
+
+            if (updated === 0) {
+                return res.status(404).json({ message: "User not found" });
+            }
+
+
+            await sendEmail(email, generatedCode);
+
+            return res.status(200).json({ message: "Code sent to your email" });
+        }
+
+
+        if (email && code && !newPassword) {
+
+            const user = await userModel.findOne({ where: { email } });
+
+            if (!user) {
+                return res.status(404).json({ message: "User not found" });
+            }
+
+
+            if (user.sendCode !== code) {
+                return res.status(400).json({ message: "Invalid or expired code" });
+            }
+
+            return res.status(200).json({ message: "Code verified successfully" });
+        }
+
+
+        if (email && code && newPassword) {
+
+            const user = await userModel.findOne({ where: { email } });
+
+            if (!user) {
+                return res.status(404).json({ message: "User not found" });
+            }
+
+
+            if (user.sendCode !== code) {
+                return res.status(400).json({ message: "Invalid or expired code" });
+            }
+
+            // Hash the new password
+            const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+            // Update the password in the database
+            await userModel.update(
+                { password: hashedPassword },
+                { where: { email } }
+            );
+
+
+            await userModel.update(
+                { sendCode: null }, // Clear the code after successful password reset
+                { where: { email } }
+            );
+
+            return res.status(200).json({ message: "Password reset successfully" });
+        }
+
+
+        return res.status(400).json({ message: "Invalid request" });
+    } catch (error) {
+        console.error("Error in reset password flow:", error);
+        return res.status(500).json({ message: "Something went wrong" });
     }
 };
