@@ -3,7 +3,7 @@ import { connectDB } from '../DB/Connection.js';
 import authRouter from './modules/auth/auth.router.js'
 import categoryRouter from './modules/category/category.router.js'
 import productRouter from './modules/product/product.router.js'
-require('dotenv').config();
+import 'dotenv/config'
 
 const initApp = async (app, express) => {
 
