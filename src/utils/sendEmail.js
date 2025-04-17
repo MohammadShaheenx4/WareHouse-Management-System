@@ -1,26 +1,29 @@
-import nodemailer from "nodemailer";
+import nodemailer from 'nodemailer';
+import dotenv from 'dotenv';
 
+// Load environment variables
+dotenv.config();
 
-export async function sendEmail(userEmail, code) {
+export async function sendEmail({ userEmail, subject, text, html }) {
     const transporter = nodemailer.createTransport({
-        service: "gmail",
+        service: 'gmail',
         auth: {
-            user: "hamode.sh889@gmail.com", // sender email
-            pass: "okim wwzy jqwe wmfv", // app password
+            user: process.env.EMAIL_USER,  // Sender email from environment variables
+            pass: process.env.EMAIL_PASS,  // App password from environment variables
         },
     });
 
     try {
         const info = await transporter.sendMail({
-            from: '"Grade Project 👻" <hamode.sh889@gmail.com>', // sender address
-            to: userEmail, // recipient email
-            subject: "Password Reset Code", // Subject line
-            text: `Your password reset code is: ${code}`, // plain text body
-            html: `<b>Your password reset code is: ${code}</b>`, // HTML body
+            from: `"Storify 👻" <${process.env.EMAIL_USER}>`, // Sender address
+            to: userEmail, // Recipient email
+            subject: subject, // Dynamic subject line
+            text: text,  // Dynamic plain text body
+            html: html,  // Dynamic HTML body
         });
 
-        console.log("Message sent: %s", info.messageId);
+        console.log('Message sent: %s', info.messageId);
     } catch (error) {
-        console.error("Error sending email: ", error);
+        console.error('Error sending email: ', error);
     }
 }

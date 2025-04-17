@@ -7,6 +7,10 @@ const userModel = sequelize.define('User', {
         primaryKey: true,
         autoIncrement: true,
     },
+    name: {
+        type: DataTypes.STRING(100),
+        allowNull: false,  // Ensure the user's name is required
+    },
     email: {
         type: DataTypes.STRING(100),
         allowNull: false,
@@ -24,21 +28,25 @@ const userModel = sequelize.define('User', {
         allowNull: true,
     },
     isActive: {
-        type: DataTypes.ENUM('Active', 'NotActive'),
+        type: DataTypes.BOOLEAN,
         allowNull: false,
-        defaultValue: 'Active',
+        defaultValue: true  // Default value is true
     },
     roleName: {
         type: DataTypes.ENUM('Admin', 'Customer', 'Supplier', 'DeliveryEmployee', 'WareHouseEmployee', 'HighLevelEmployee'),
         allowNull: false,
     },
     sendCode: {
-        type: String,
-        default: null,
+        type: DataTypes.STRING,  // Corrected to DataTypes.STRING (for Sequelize)
+        defaultValue: null,
+    },
+    registrationDate: {
+        type: DataTypes.DATE,
+        defaultValue: DataTypes.NOW, // Automatically sets the current date and time
     }
 }, {
     tableName: 'user', // Explicitly define the table name
-    timestamps: false, // Disable createdAt & updatedAt if not needed
+    timestamps: false,  // Disable createdAt & updatedAt if not needed
 });
 
 export default userModel;

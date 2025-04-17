@@ -1,7 +1,8 @@
 import cors from 'cors'
 import { connectDB } from '../DB/Connection.js';
 import authRouter from './modules/auth/auth.router.js'
-
+import categoryRouter from './modules/category/category.router.js'
+import productRouter from './modules/product/product.router.js'
 const initApp = async (app, express) => {
 
     app.use(express.json());
@@ -12,6 +13,9 @@ const initApp = async (app, express) => {
     });
 
     app.use("/auth", authRouter);
+    app.use("/category", categoryRouter);
+    app.use("/product", productRouter);
+
 
 
 
