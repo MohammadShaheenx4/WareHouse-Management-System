@@ -8,8 +8,8 @@ export async function sendEmail({ userEmail, subject, text, html }) {
     const transporter = nodemailer.createTransport({
         service: 'gmail',
         auth: {
-            user: process.env.EMAIL_USER,  // Sender email from environment variables
-            pass: process.env.EMAIL_PASS,  // App password from environment variables
+            user: "hamode.sh889@gmail.com",  // Sender email from environment variables
+            pass: "okim wwzy jqwe wmfv",  // App password from environment variables
         },
     });
 
