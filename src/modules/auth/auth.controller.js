@@ -7,7 +7,7 @@ import { sendEmail } from "../../utils/sendEmail.js";
 import { DataTypes } from 'sequelize';
 import supplierModel from '../../../DB/Models/supplier.model.js'; // Import the supplier model
 import customerModel from '../../../DB/Models/customer.model.js'; // Import the supplier model
-
+import cloudinary from "../../utils/cloudinary.js";
 
 
 export const register = async (req, res, next) => {
@@ -38,7 +38,7 @@ export const register = async (req, res, next) => {
             email,
             password: hashedPassword,
             phoneNumber: phoneNumber || null, // Optional
-            isActive: isActive || true,  // Default to 'Active' if not provided
+            isActive: isActive || "Active",  // Default to 'Active' if not provided
             roleName
         });
 
@@ -95,7 +95,7 @@ export const login = async (req, res) => {
         }
 
 
-        if (user.isActive !== true) {
+        if (user.isActive !== "Active") {
             return res.status(403).json({ message: "Account is not active. Contact admin." });
         }
 
@@ -269,6 +269,13 @@ export const updateUser = async (req, res) => {
         user.sendCode = sendCode || user.sendCode;
         user.name = name || user.name;
 
+        if (req.file) {
+            const { secure_url } = await cloudinary.uploader.upload(req.file.path
+                , { folder: 'warehouse/usersImages' }
+            );
+            user.profilePicture = secure_url;
+
+        };
         // Step 3: Save the updated user
         await user.save();
 

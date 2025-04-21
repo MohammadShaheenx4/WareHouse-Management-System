@@ -1,5 +1,5 @@
 import { DataTypes } from 'sequelize';
-import sequelize from '../Connection.js'; // Ensure this file exists for DB connection
+import sequelize from '../Connection.js';
 
 const userModel = sequelize.define('User', {
     userId: {
@@ -9,14 +9,14 @@ const userModel = sequelize.define('User', {
     },
     name: {
         type: DataTypes.STRING(100),
-        allowNull: false,  // Ensure the user's name is required
+        allowNull: false,
     },
     email: {
         type: DataTypes.STRING(100),
         allowNull: false,
         unique: true,
         validate: {
-            isEmail: true, // Ensures valid email format
+            isEmail: true,
         },
     },
     password: {
@@ -24,29 +24,34 @@ const userModel = sequelize.define('User', {
         allowNull: false,
     },
     phoneNumber: {
-        type: DataTypes.STRING(20), // Use STRING to avoid number formatting issues
+        type: DataTypes.STRING(20),
         allowNull: true,
     },
     isActive: {
-        type: DataTypes.BOOLEAN,
+        type: DataTypes.ENUM('Active', 'NotActive'),  // ENUM field with 'Active' and 'NotActive'
         allowNull: false,
-        defaultValue: true  // Default value is true
+        defaultValue: 'Active',
     },
     roleName: {
         type: DataTypes.ENUM('Admin', 'Customer', 'Supplier', 'DeliveryEmployee', 'WareHouseEmployee', 'HighLevelEmployee'),
         allowNull: false,
     },
     sendCode: {
-        type: DataTypes.STRING,  // Corrected to DataTypes.STRING (for Sequelize)
+        type: DataTypes.STRING,
         defaultValue: null,
     },
     registrationDate: {
         type: DataTypes.DATE,
-        defaultValue: DataTypes.NOW, // Automatically sets the current date and time
+        defaultValue: DataTypes.NOW,
+    },
+    profilePicture: {
+        type: DataTypes.STRING, // Stores file path or URL
+        allowNull: true,
+        defaultValue: null
     }
 }, {
-    tableName: 'user', // Explicitly define the table name
-    timestamps: false,  // Disable createdAt & updatedAt if not needed
+    tableName: 'user',
+    timestamps: false,
 });
 
 export default userModel;
