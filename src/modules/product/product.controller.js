@@ -561,7 +561,7 @@ export const updateProduct = async (req, res) => {
                 }
 
                 // Now find suppliers that have userIds matching these users
-                const userIds = users.map(user => user.id);
+                const userIds = users.map(user => user.userId);
                 const suppliersByName = await supplierModel.findAll({
                     where: {
                         userId: {
@@ -571,7 +571,7 @@ export const updateProduct = async (req, res) => {
                     include: [{
                         model: userModel,
                         as: 'user',
-                        attributes: ['id', 'name']
+                        attributes: ['userId', 'name']
                     }]
                 });
 
@@ -672,7 +672,7 @@ export const updateProduct = async (req, res) => {
                         {
                             model: userModel,
                             as: 'user',
-                            attributes: ['id', 'name', 'email', 'phone']
+                            attributes: ['userId', 'name', 'email', 'phoneNumber']
                         }
                     ]
                 }
@@ -751,7 +751,7 @@ export const getLowStockProducts = async (req, res) => {
                         {
                             model: userModel,
                             as: 'user',
-                            attributes: ['id', 'name', 'email', 'phone']
+                            attributes: ['userId', 'name', 'email', 'phoneNumber']
                         }
                     ]
                 }
