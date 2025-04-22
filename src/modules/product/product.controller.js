@@ -770,3 +770,41 @@ export const getLowStockProducts = async (req, res) => {
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
+
+/**
+ * @desc    Get product and category statistics
+ * @route   GET /api/products/stats
+ * @access  Public
+ */
+export const getProductStats = async (req, res) => {
+    try {
+        // Get total number of products
+        const totalProducts = await productModel.count();
+
+        // Get number of active products
+        const activeProducts = await productModel.count({
+            where: { status: 'Active' }
+        });
+
+        // Get number of inactive products
+        const inactiveProducts = await productModel.count({
+            where: { status: 'NotActive' }
+        });
+
+        // Get total number of categories
+        const totalCategories = await categoryModel.count();
+
+        return res.status(200).json({
+            message: 'Statistics retrieved successfully',
+            stats: {
+                totalProducts,
+                activeProducts,
+                inactiveProducts,
+                totalCategories
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching statistics:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};

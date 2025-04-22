@@ -9,7 +9,7 @@ const router = Router();
 router.get('/products', controller.getAllProducts);
 router.get('/low-stock', controller.getLowStockProducts);
 router.get('/:id', controller.getProductById);
-
+router.get('/stats', controller.getProductStats);
 // Admin only routes - requires admin privileges
 router.post('/add', Auth.adminOnly, fileUpload(fileValidation.image).single('image'), controller.createProduct);
 router.put('/:id', Auth.adminOnly, fileUpload(fileValidation.image).single('image'), controller.updateProduct);
