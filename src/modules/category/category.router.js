@@ -10,7 +10,7 @@ router.get('/:id', controller.getCategoryById);
 router.get('/:id/products', controller.getProductsByCategory);
 
 // Admin only routes - requires admin privileges
-router.post('/add', fileUpload(fileValidation.image).single('image'), controller.createCategory);
+router.post('/add', Auth.adminOnly, fileUpload(fileValidation.image).single('image'), controller.createCategory);
 router.put('/:id', Auth.adminOnly, fileUpload(fileValidation.image).single('image'), controller.updateCategory);
 router.delete('/:id', Auth.adminOnly, controller.deleteCategory);
 
