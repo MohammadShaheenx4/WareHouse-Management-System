@@ -38,6 +38,19 @@ export const createProductSchema = Joi.object({
         .messages({
             'string.base': 'Category name must be a string'
         }),
+    // Add validation for suppliers - can be array of IDs or supplier names
+    supplierIds: Joi.array().items(Joi.number().integer().positive())
+        .messages({
+            'array.base': 'Supplier IDs must be an array',
+            'number.base': 'Supplier ID must be a number',
+            'number.integer': 'Supplier ID must be an integer',
+            'number.positive': 'Supplier ID must be positive'
+        }),
+    supplierNames: Joi.array().items(Joi.string())
+        .messages({
+            'array.base': 'Supplier names must be an array',
+            'string.base': 'Supplier name must be a string'
+        }),
     status: Joi.string().valid('Active', 'NotActive').default('Active'),
     barcode: Joi.string().allow('', null),
     warranty: Joi.string().allow('', null),
@@ -49,6 +62,35 @@ export const createProductSchema = Joi.object({
     if (!value.categoryId && !value.categoryName) {
         return helpers.error('any.custom', { message: 'Either categoryId or categoryName must be provided' });
     }
+
+    // Ensure at least one of supplierIds or supplierNames is provided
+    if (value.supplierIds === undefined && value.supplierNames === undefined) {
+        return value; // Suppliers can be optional
+    }
+
+    // If supplierIds is empty array and supplierNames is empty array, it's valid (no suppliers)
+    if (
+        (Array.isArray(value.supplierIds) && value.supplierIds.length === 0) &&
+        (Array.isArray(value.supplierNames) && value.supplierNames.length === 0)
+    ) {
+        return value;
+    }
+
+    // If one is provided, it should not be empty
+    if (
+        (Array.isArray(value.supplierIds) && value.supplierIds.length === 0) &&
+        (!Array.isArray(value.supplierNames) || value.supplierNames.length === 0)
+    ) {
+        return helpers.error('any.custom', { message: 'At least one supplier must be provided' });
+    }
+
+    if (
+        (Array.isArray(value.supplierNames) && value.supplierNames.length === 0) &&
+        (!Array.isArray(value.supplierIds) || value.supplierIds.length === 0)
+    ) {
+        return helpers.error('any.custom', { message: 'At least one supplier must be provided' });
+    }
+
     return value;
 });
 
@@ -86,13 +128,26 @@ export const updateProductSchema = Joi.object({
         .messages({
             'string.base': 'Category name must be a string'
         }),
+    // Add validation for suppliers - can be array of IDs or supplier names
+    supplierIds: Joi.array().items(Joi.number().integer().positive())
+        .messages({
+            'array.base': 'Supplier IDs must be an array',
+            'number.base': 'Supplier ID must be a number',
+            'number.integer': 'Supplier ID must be an integer',
+            'number.positive': 'Supplier ID must be positive'
+        }),
+    supplierNames: Joi.array().items(Joi.string())
+        .messages({
+            'array.base': 'Supplier names must be an array',
+            'string.base': 'Supplier name must be a string'
+        }),
     status: Joi.string().valid('Active', 'NotActive'),
     barcode: Joi.string().allow('', null),
     warranty: Joi.string().allow('', null),
     prodDate: Joi.date().allow(null),
     expDate: Joi.date().allow(null),
     description: Joi.string().allow('', null)
-}).min(0).message('Please provide at least one field to update');
+}).min(1).message('Please provide at least one field to update');
 
 // Validate product ID parameter
 export const validateProductId = Joi.object({

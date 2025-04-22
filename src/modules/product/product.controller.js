@@ -3,9 +3,12 @@ import categoryModel from "../../../DB/Models/category.model.js";
 import cloudinary from "../../utils/cloudinary.js";
 import { Op } from "sequelize";
 import { createProductSchema, updateProductSchema, validateProductId, fileValidation } from "./product.validation.js";
+import productSupplierModel from "../../../DB/Models/productSupplier.model.js";
+import supplierModel from "../../../DB/Models/supplier.model.js";
+import userModel from "../../../DB/Models/user.model.js";
 
 /**
- * @desc    Create a new product
+ * @desc    Create a new product with suppliers
  * @route   POST /api/products
  * @access  Admin
  */
@@ -28,8 +31,19 @@ export const createProduct = async (req, res) => {
         let {
             name, costPrice, sellPrice, quantity,
             categoryId, categoryName, status = 'Active', barcode,
-            warranty, prodDate, expDate, description
+            warranty, prodDate, expDate, description,
+            supplierIds, supplierNames
         } = req.body;
+
+        // Convert supplierNames to array if it's not
+        if (supplierNames && !Array.isArray(supplierNames)) {
+            supplierNames = [supplierNames];
+        }
+
+        // Convert supplierIds to array if it's not
+        if (supplierIds && !Array.isArray(supplierIds)) {
+            supplierIds = [supplierIds];
+        }
 
         // If categoryName is provided, find the corresponding categoryId
         if (categoryName && !categoryId) {
@@ -50,6 +64,94 @@ export const createProduct = async (req, res) => {
             return res.status(404).json({ message: 'Category not found' });
         }
 
+        let finalSupplierIds = [];
+
+        // If supplierNames is provided, convert them to supplier IDs by looking up users first
+        if (supplierNames && Array.isArray(supplierNames) && supplierNames.length > 0) {
+            // First find the users by name
+            const users = await userModel.findAll({
+                where: {
+                    name: {
+                        [Op.in]: supplierNames
+                    }
+                }
+            });
+
+            if (users.length === 0) {
+                return res.status(404).json({
+                    message: `No users found with names: ${supplierNames.join(', ')}`
+                });
+            }
+
+            // Now find suppliers that have userIds matching these users
+            const userIds = users.map(user => user.userId);
+            const suppliersByName = await supplierModel.findAll({
+                where: {
+                    userId: {
+                        [Op.in]: userIds
+                    }
+                },
+                include: [{
+                    model: userModel,
+                    as: 'user',
+                    attributes: ['userId', 'name']
+                }]
+            });
+
+            // Get IDs from found suppliers
+            const foundSupplierIds = suppliersByName.map(supplier => supplier.id);
+
+            // Check if at least one supplier was found
+            if (foundSupplierIds.length === 0) {
+                return res.status(404).json({
+                    message: `No suppliers found with names: ${supplierNames.join(', ')}`
+                });
+            }
+
+            // Check if all supplier names were found
+            const foundNames = suppliersByName.map(supplier => supplier.user.name);
+            const notFoundNames = supplierNames.filter(name =>
+                !foundNames.includes(name)
+            );
+
+            if (notFoundNames.length > 0) {
+                return res.status(404).json({
+                    message: `The following suppliers were not found: ${notFoundNames.join(', ')}`
+                });
+            }
+
+            finalSupplierIds = [...foundSupplierIds];
+        }
+
+        // If supplierIds is provided, verify they exist and add to finalSupplierIds
+        if (supplierIds && Array.isArray(supplierIds) && supplierIds.length > 0) {
+            // Convert string IDs to numbers if needed
+            const numericSupplierIds = supplierIds.map(id =>
+                typeof id === 'string' ? parseInt(id) : id
+            );
+
+            const suppliers = await supplierModel.findAll({
+                where: {
+                    id: {
+                        [Op.in]: numericSupplierIds
+                    }
+                }
+            });
+
+            // Check if all supplier IDs were found
+            if (suppliers.length !== numericSupplierIds.length) {
+                const foundIds = suppliers.map(supplier => supplier.id);
+                const notFoundIds = numericSupplierIds.filter(id => !foundIds.includes(id));
+
+                return res.status(404).json({
+                    message: `The following supplier IDs were not found: ${notFoundIds.join(', ')}`
+                });
+            }
+
+            // Add to finalSupplierIds, avoiding duplicates
+            finalSupplierIds = [...new Set([...finalSupplierIds, ...numericSupplierIds])];
+        }
+
         // Create product without image initially
         const newProduct = await productModel.create({
             name,
@@ -65,6 +167,16 @@ export const createProduct = async (req, res) => {
             description: description || null
         });
 
+        // Associate suppliers with the product
+        if (finalSupplierIds.length > 0) {
+            const productSupplierEntries = finalSupplierIds.map(supplierId => ({
+                productId: newProduct.productId,
+                supplierId
+            }));
+
+            await productSupplierModel.bulkCreate(productSupplierEntries);
+        }
+
         // Upload image to cloudinary if provided
         if (req.file) {
             const { secure_url } = await cloudinary.uploader.upload(req.file.path, {
@@ -75,13 +187,28 @@ export const createProduct = async (req, res) => {
             await newProduct.update({ image: secure_url });
         }
 
-        // Get the created product with category information
+        // Get the created product with category and supplier information
         const createdProduct = await productModel.findByPk(newProduct.productId, {
-            include: [{
-                model: categoryModel,
-                as: 'category',
-                attributes: ['categoryID', 'categoryName']
-            }]
+            include: [
+                {
+                    model: categoryModel,
+                    as: 'category',
+                    attributes: ['categoryID', 'categoryName']
+                },
+                {
+                    model: supplierModel,
+                    as: 'suppliers',
+                    attributes: ['id', 'userId', 'accountBalance'],
+                    through: { attributes: [] }, // Don't include join table attributes
+                    include: [
+                        {
+                            model: userModel,
+                            as: 'user',
+                            attributes: ['userId', 'name', 'email', 'phoneNumber']
+                        }
+                    ]
+                }
+            ]
         });
 
         return res.status(201).json({
@@ -107,6 +234,7 @@ export const getAllProducts = async (req, res) => {
             minPrice,
             maxPrice,
             category, // This can be either category name or ID
+            supplier, // This can be either supplier name or ID
             status,
             inStock
         } = req.query;
@@ -157,14 +285,105 @@ export const getAllProducts = async (req, res) => {
             filter.quantity = { [Op.gt]: 0 };
         }
 
-        // Get products with category information
-        const products = await productModel.findAll({
-            where: filter,
-            include: [{
+        // Handle supplier filtering
+        if (supplier) {
+            let productIds = [];
+
+            // Check if supplier parameter is a number (ID) or string (name)
+            if (!isNaN(supplier)) {
+                // It's an ID, find products directly from junction table
+                const productSuppliers = await productSupplierModel.findAll({
+                    where: { supplierId: parseInt(supplier) },
+                    attributes: ['productId']
+                });
+
+                if (productSuppliers.length === 0) {
+                    // No products with this supplier, return empty result
+                    return res.status(200).json({
+                        message: 'Products retrieved successfully',
+                        count: 0,
+                        products: []
+                    });
+                }
+
+                productIds = productSuppliers.map(ps => ps.productId);
+            } else {
+                // It's a name, find the users with this name first
+                const users = await userModel.findAll({
+                    where: { name: { [Op.like]: `%${supplier}%` } }
+                });
+
+                if (users.length === 0) {
+                    // No users with this name, return empty result
+                    return res.status(200).json({
+                        message: 'Products retrieved successfully',
+                        count: 0,
+                        products: []
+                    });
+                }
+
+                // Find suppliers with these user IDs
+                const suppliers = await supplierModel.findAll({
+                    where: { userId: { [Op.in]: users.map(user => user.userId) } }
+                });
+
+                if (suppliers.length === 0) {
+                    // No suppliers for these users, return empty result
+                    return res.status(200).json({
+                        message: 'Products retrieved successfully',
+                        count: 0,
+                        products: []
+                    });
+                }
+
+                // Find products for these suppliers
+                const productSuppliers = await productSupplierModel.findAll({
+                    where: { supplierId: { [Op.in]: suppliers.map(s => s.id) } },
+                    attributes: ['productId']
+                });
+
+                if (productSuppliers.length === 0) {
+                    // No products with these suppliers, return empty result
+                    return res.status(200).json({
+                        message: 'Products retrieved successfully',
+                        count: 0,
+                        products: []
+                    });
+                }
+
+                productIds = productSuppliers.map(ps => ps.productId);
+            }
+
+            // Add product IDs to filter
+            filter.productId = { [Op.in]: productIds };
+        }
+
+        // Prepare include options for associations
+        const includeOptions = [
+            {
                 model: categoryModel,
                 as: 'category',
                 attributes: ['categoryID', 'categoryName']
-            }]
+            },
+            {
+                model: supplierModel,
+                as: 'suppliers',
+                attributes: ['id', 'userId', 'accountBalance'],
+                through: { attributes: [] }, // Don't include join table attributes
+                include: [
+                    {
+                        model: userModel,
+                        as: 'user',
+                        attributes: ['userId', 'name', 'email', 'phoneNumber']
+                    }
+                ]
+            }
+        ];
+
+        // Get products with category and supplier information
+        const products = await productModel.findAll({
+            where: filter,
+            include: includeOptions
         });
 
         return res.status(200).json({
@@ -193,13 +412,28 @@ export const getProductById = async (req, res) => {
 
         const productId = req.params.id;
 
-        // Get product with category information
+        // Get product with category and supplier information
         const product = await productModel.findByPk(productId, {
-            include: [{
-                model: categoryModel,
-                as: 'category',
-                attributes: ['categoryID', 'categoryName']
-            }]
+            include: [
+                {
+                    model: categoryModel,
+                    as: 'category',
+                    attributes: ['categoryID', 'categoryName']
+                },
+                {
+                    model: supplierModel,
+                    as: 'suppliers',
+                    attributes: ['id', 'userId', 'accountBalance'],
+                    through: { attributes: [] }, // Don't include join table attributes
+                    include: [
+                        {
+                            model: userModel,
+                            as: 'user',
+                            attributes: ['userId', 'name', 'email', 'phoneNumber']
+                        }
+                    ]
+                }
+            ]
         });
 
         if (!product) {
@@ -253,8 +487,19 @@ export const updateProduct = async (req, res) => {
         let {
             name, costPrice, sellPrice, quantity,
             categoryId, categoryName, status, barcode,
-            warranty, prodDate, expDate, description
+            warranty, prodDate, expDate, description,
+            supplierIds, supplierNames
         } = req.body;
+
+        // Convert supplierNames to array if it's not
+        if (supplierNames && !Array.isArray(supplierNames)) {
+            supplierNames = [supplierNames];
+        }
+
+        // Convert supplierIds to array if it's not
+        if (supplierIds && !Array.isArray(supplierIds)) {
+            supplierIds = [supplierIds];
+        }
 
         // If categoryName is provided, find the corresponding categoryId
         if (categoryName && !categoryId) {
@@ -294,6 +539,112 @@ export const updateProduct = async (req, res) => {
 
         await product.update(updateData);
 
+        // Process supplier information if provided
+        if ((supplierIds && Array.isArray(supplierIds)) || (supplierNames && Array.isArray(supplierNames))) {
+            let finalSupplierIds = [];
+
+            // If supplierNames is provided, convert them to supplier IDs by looking up users first
+            if (supplierNames && Array.isArray(supplierNames) && supplierNames.length > 0) {
+                // First find the users by name
+                const users = await userModel.findAll({
+                    where: {
+                        name: {
+                            [Op.in]: supplierNames
+                        }
+                    }
+                });
+
+                if (users.length === 0) {
+                    return res.status(404).json({
+                        message: `No users found with names: ${supplierNames.join(', ')}`
+                    });
+                }
+
+                // Now find suppliers that have userIds matching these users
+                const userIds = users.map(user => user.id);
+                const suppliersByName = await supplierModel.findAll({
+                    where: {
+                        userId: {
+                            [Op.in]: userIds
+                        }
+                    },
+                    include: [{
+                        model: userModel,
+                        as: 'user',
+                        attributes: ['id', 'name']
+                    }]
+                });
+
+                // Get IDs from found suppliers
+                const foundSupplierIds = suppliersByName.map(supplier => supplier.id);
+
+                // Check if at least one supplier was found
+                if (foundSupplierIds.length === 0) {
+                    return res.status(404).json({
+                        message: `No suppliers found with names: ${supplierNames.join(', ')}`
+                    });
+                }
+
+                // Check if all supplier names were found
+                const foundNames = suppliersByName.map(supplier => supplier.user.name);
+                const notFoundNames = supplierNames.filter(name =>
+                    !foundNames.includes(name)
+                );
+
+                if (notFoundNames.length > 0) {
+                    return res.status(404).json({
+                        message: `The following suppliers were not found: ${notFoundNames.join(', ')}`
+                    });
+                }
+
+                finalSupplierIds = [...foundSupplierIds];
+            }
+
+            // If supplierIds is provided, verify they exist and add to finalSupplierIds
+            if (supplierIds && Array.isArray(supplierIds) && supplierIds.length > 0) {
+                // Convert string IDs to numbers if needed
+                const numericSupplierIds = supplierIds.map(id =>
+                    typeof id === 'string' ? parseInt(id) : id
+                );
+
+                const suppliers = await supplierModel.findAll({
+                    where: {
+                        id: {
+                            [Op.in]: numericSupplierIds
+                        }
+                    }
+                });
+
+                // Check if all supplier IDs were found
+                if (suppliers.length !== numericSupplierIds.length) {
+                    const foundIds = suppliers.map(supplier => supplier.id);
+                    const notFoundIds = numericSupplierIds.filter(id => !foundIds.includes(id));
+
+                    return res.status(404).json({
+                        message: `The following supplier IDs were not found: ${notFoundIds.join(', ')}`
+                    });
+                }
+
+                // Add to finalSupplierIds, avoiding duplicates
+                finalSupplierIds = [...new Set([...finalSupplierIds, ...numericSupplierIds])];
+            }
+
+            // Remove all existing product-supplier associations
+            await productSupplierModel.destroy({
+                where: { productId }
+            });
+
+            // Create new product-supplier associations
+            if (finalSupplierIds.length > 0) {
+                const productSupplierEntries = finalSupplierIds.map(supplierId => ({
+                    productId,
+                    supplierId
+                }));
+
+                await productSupplierModel.bulkCreate(productSupplierEntries);
+            }
+        }
+
         // Upload image to cloudinary if provided
         if (req.file) {
             const { secure_url } = await cloudinary.uploader.upload(req.file.path, {
@@ -304,13 +655,28 @@ export const updateProduct = async (req, res) => {
             await product.update({ image: secure_url });
         }
 
-        // Get updated product with category information
+        // Get updated product with category and supplier information
         const updatedProduct = await productModel.findByPk(productId, {
-            include: [{
-                model: categoryModel,
-                as: 'category',
-                attributes: ['categoryID', 'categoryName']
-            }]
+            include: [
+                {
+                    model: categoryModel,
+                    as: 'category',
+                    attributes: ['categoryID', 'categoryName']
+                },
+                {
+                    model: supplierModel,
+                    as: 'suppliers',
+                    attributes: ['id', 'userId', 'accountBalance'],
+                    through: { attributes: [] }, // Don't include join table attributes
+                    include: [
+                        {
+                            model: userModel,
+                            as: 'user',
+                            attributes: ['id', 'name', 'email', 'phone']
+                        }
+                    ]
+                }
+            ]
         });
 
         return res.status(200).json({
@@ -343,9 +709,7 @@ export const deleteProduct = async (req, res) => {
             return res.status(404).json({ message: 'Product not found' });
         }
 
-        // TODO: Check if product is in any orders before deleting
-        // If needed, add check here
-
+        // Delete the product (this will also delete related product-supplier entries due to CASCADE)
         await product.destroy();
 
         return res.status(200).json({
@@ -372,11 +736,26 @@ export const getLowStockProducts = async (req, res) => {
                 quantity: { [Op.lt]: threshold },
                 status: 'Active'
             },
-            include: [{
-                model: categoryModel,
-                as: 'category',
-                attributes: ['categoryID', 'categoryName']
-            }],
+            include: [
+                {
+                    model: categoryModel,
+                    as: 'category',
+                    attributes: ['categoryID', 'categoryName']
+                },
+                {
+                    model: supplierModel,
+                    as: 'suppliers',
+                    attributes: ['id', 'userId', 'accountBalance'],
+                    through: { attributes: [] }, // Don't include join table attributes
+                    include: [
+                        {
+                            model: userModel,
+                            as: 'user',
+                            attributes: ['id', 'name', 'email', 'phone']
+                        }
+                    ]
+                }
+            ],
             order: [['quantity', 'ASC']]
         });
 

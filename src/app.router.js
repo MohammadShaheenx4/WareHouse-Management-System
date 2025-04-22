@@ -3,6 +3,8 @@ import { connectDB } from '../DB/Connection.js';
 import authRouter from './modules/auth/auth.router.js'
 import categoryRouter from './modules/category/category.router.js'
 import productRouter from './modules/product/product.router.js'
+import supplierOrderRoutes from './modules/supplierOrder/supplierOrder.router.js';
+
 import 'dotenv/config'
 
 const initApp = async (app, express) => {
@@ -17,6 +19,7 @@ const initApp = async (app, express) => {
     app.use("/auth", authRouter);
     app.use("/category", categoryRouter);
     app.use("/product", productRouter);
+    app.use('/supplierOrders', supplierOrderRoutes);
 
 
 

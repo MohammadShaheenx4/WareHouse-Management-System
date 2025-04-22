@@ -45,13 +45,13 @@ export const fileValidation = Joi.object({
     fieldname: Joi.string().required(),
     originalname: Joi.string().required(),
     encoding: Joi.string().required(),
-    mimetype: Joi.string().valid('image/jpeg', 'image/png', 'image/jpg', 'image/gif').required()
+    mimetype: Joi.string().valid('image/jpeg', 'image/webp', 'image/png', 'image/jpg', 'image/gif').required()
         .messages({
             'any.only': 'Only image files (jpeg, png, jpg, gif) are allowed'
         }),
-    size: Joi.number().max(5 * 1024 * 1024).required()
-        .messages({
-            'number.max': 'Image size should not exceed 5MB'
-        }),
+    // size: Joi.number().max(5 * 1024 * 1024).required()
+    //     .messages({
+    //         'number.max': 'Image size should not exceed 5MB'
+    //     }),
     path: Joi.string().required()
 }).unknown(true);
