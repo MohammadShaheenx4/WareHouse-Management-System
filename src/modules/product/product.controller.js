@@ -6,6 +6,7 @@ import { createProductSchema, updateProductSchema, validateProductId, fileValida
 import productSupplierModel from "../../../DB/Models/productSupplier.model.js";
 import supplierModel from "../../../DB/Models/supplier.model.js";
 import userModel from "../../../DB/Models/user.model.js";
+import cors from 'cors'
 
 /**
  * @desc    Create a new product with suppliers
