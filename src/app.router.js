@@ -6,7 +6,6 @@ import productRouter from './modules/product/product.router.js'
 import supplierOrderRoutes from './modules/supplierOrder/supplierOrder.router.js';
 
 import 'dotenv/config'
-app.use(cors());
 
 const initApp = async (app, express) => {
 
