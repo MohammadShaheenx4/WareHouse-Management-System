@@ -16,6 +16,7 @@ import cors from 'cors'
 export const createProduct = async (req, res) => {
     try {
         // Validate request body
+
         const { error } = createProductSchema.validate(req.body);
         if (error) {
             return res.status(400).json({ message: error.details[0].message });
@@ -36,6 +37,20 @@ export const createProduct = async (req, res) => {
             supplierIds, supplierNames
         } = req.body;
 
+
+
+        // Check for duplicate barcode if provided
+        if (barcode) {
+            const existingProduct = await productModel.findOne({
+                where: { barcode }
+            });
+
+            if (existingProduct) {
+                return res.status(400).json({
+                    message: `Barcode ${barcode} already exists in the system. Please use a unique barcode.`
+                });
+            }
+        }
         // Convert supplierNames to array if it's not
         if (supplierNames && !Array.isArray(supplierNames)) {
             supplierNames = [supplierNames];
