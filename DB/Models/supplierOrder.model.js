@@ -3,7 +3,7 @@ import sequelize from '../Connection.js';
 import supplierModel from './supplier.model.js';
 import userModel from './user.model.js';
 
-const supplierOrderModel = sequelize.define('SupplierOrder', {
+const supplierOrderModel = sequelize.define('Supplierorder', {
     id: {
         type: DataTypes.INTEGER,
         primaryKey: true,
@@ -33,7 +33,7 @@ const supplierOrderModel = sequelize.define('SupplierOrder', {
         defaultValue: 0
     }
 }, {
-    tableName: 'supplierOrders',
+    tableName: 'supplierorders',
     timestamps: true
 });
 

@@ -1,5 +1,11 @@
 import { DataTypes, Sequelize } from 'sequelize';
+/*
+name:warehousemanagement
+user:shaheen
+pass:Gf85!m#atWCT6mB
+host:pro.freedb.tech
 
+*/
 
 
 const sequelize = new Sequelize('warehousemanagement', 'shaheen', 'Gf85!m#atWCT6mB', {

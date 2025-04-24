@@ -3,7 +3,7 @@ import sequelize from '../Connection.js';
 import supplierOrderModel from './supplierOrder.model.js';
 import productModel from './product.model.js';
 
-const supplierOrderItemModel = sequelize.define('SupplierOrderItem', {
+const supplierOrderItemModel = sequelize.define('SupplierorderItem', {
     id: {
         type: DataTypes.INTEGER,
         primaryKey: true,
@@ -13,7 +13,7 @@ const supplierOrderItemModel = sequelize.define('SupplierOrderItem', {
         type: DataTypes.INTEGER,
         allowNull: false,
         references: {
-            model: 'supplierOrders',
+            model: 'supplierorders',
             key: 'id'
         }
     },
@@ -46,7 +46,7 @@ const supplierOrderItemModel = sequelize.define('SupplierOrderItem', {
         allowNull: false
     }
 }, {
-    tableName: 'supplierOrderItems',
+    tableName: 'supplierorderItems',
     timestamps: true
 });
 
