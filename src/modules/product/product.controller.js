@@ -786,31 +786,35 @@ export const getLowStockProducts = async (req, res) => {
     }
 };
 
+
 /**
- * @desc    Get product and category statistics
- * @route   GET /api/products/stats
- * @access  Public
+ * @desc    Get dashboard statistics
+ * @route   GET /api/stats/dashboard
+ * @access  Admin
  */
-export const getProductStats = async (req, res) => {
+export const getDashboardStats = async (req, res) => {
     try {
-        // Get total number of products
-        const totalProducts = await productModel.count();
+        // Run all queries in parallel for better performance
+        const [totalProducts, activeProducts, inactiveProducts, totalCategories] = await Promise.all([
+            // Get total number of products
+            productModel.count(),
 
-        // Get number of active products
-        const activeProducts = await productModel.count({
-            where: { status: 'Active' }
-        });
+            // Get number of active products
+            productModel.count({
+                where: { status: 'Active' }
+            }),
 
-        // Get number of inactive products
-        const inactiveProducts = await productModel.count({
-            where: { status: 'NotActive' }
-        });
+            // Get number of inactive products
+            productModel.count({
+                where: { status: 'NotActive' }
+            }),
 
-        // Get total number of categories
-        const totalCategories = await categoryModel.count();
+            // Get total number of categories
+            categoryModel.count()
+        ]);
 
         return res.status(200).json({
-            message: 'Statistics retrieved successfully',
+            message: 'Dashboard statistics retrieved successfully',
             stats: {
                 totalProducts,
                 activeProducts,
@@ -819,7 +823,7 @@ export const getProductStats = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Error fetching statistics:', error);
+        console.error('Error fetching dashboard statistics:', error);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
