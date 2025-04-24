@@ -2,8 +2,8 @@ import { DataTypes, Sequelize } from 'sequelize';
 
 
 
-const sequelize = new Sequelize('freedb_warehouse_management', 'freedb_shaheen', 'NuMf9E6E5PGDmh?', {
-    host: 'sql.freedb.tech',
+const sequelize = new Sequelize('warehousemanagement', 'shaheen', 'Gf85!m#atWCT6mB', {
+    host: 'pro.freedb.tech',
     port: 3306,
     dialect: 'mysql' /* one of 'mysql' | 'postgres' | 'sqlite' | 'mariadb' | 'mssql' | 'db2' | 'snowflake' | 'oracle' */
 });

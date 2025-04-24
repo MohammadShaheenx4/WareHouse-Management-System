@@ -54,4 +54,7 @@ const userModel = sequelize.define('User', {
     timestamps: false,
 });
 
+
+
 export default userModel;
+//

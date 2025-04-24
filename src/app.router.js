@@ -4,6 +4,7 @@ import authRouter from './modules/auth/auth.router.js'
 import categoryRouter from './modules/category/category.router.js'
 import productRouter from './modules/product/product.router.js'
 import supplierOrderRoutes from './modules/supplierOrder/supplierOrder.router.js';
+import supplierRouter from './modules/supplier/supplier.router.js'
 import 'dotenv/config'
 
 const initApp = async (app, express) => {
@@ -33,6 +34,8 @@ const initApp = async (app, express) => {
     app.use("/category", categoryRouter);
     app.use("/product", productRouter);
     app.use('/supplierOrders', supplierOrderRoutes);
+    app.use('/supplier', supplierRouter);
+
 
     // 404 handler
     app.use((req, res, next) => {
