@@ -422,7 +422,7 @@ export const getSupplierOrderById = async (req, res) => {
                     include: [{
                         model: userModel,
                         as: 'user',
-                        attributes: ['id', 'name', 'email', 'phone']
+                        attributes: ['userId', 'name', 'email', 'phoneNumber']
                     }]
                 },
                 {
@@ -701,3 +701,4 @@ export const getMySupplierOrders = async (req, res) => {
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
+

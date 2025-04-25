@@ -26,5 +26,4 @@ router.put('/:id/status', Auth.isAuthenticated, controller.updateSupplierOrderSt
 
 // Get supplier's own orders
 router.get('/my/orders', Auth.isAuthenticated, controller.getMySupplierOrders);
-
 export default router;
