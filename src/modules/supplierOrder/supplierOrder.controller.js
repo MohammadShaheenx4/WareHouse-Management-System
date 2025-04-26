@@ -646,12 +646,21 @@ export const updateSupplierOrderStatus = async (req, res) => {
  */
 export const getMySupplierOrders = async (req, res) => {
     try {
-        // Ensure user is a supplier
-        if (!req.user || !req.user.supplierId) {
+        // First check if user exists in request
+        if (!req.user) {
+            return res.status(401).json({ message: 'Authentication required' });
+        }
+
+        // Find supplier ID for the authenticated user
+        const supplier = await supplierModel.findOne({
+            where: { userId: req.user.userId }
+        });
+
+        if (!supplier) {
             return res.status(403).json({ message: 'Access denied. You are not a supplier' });
         }
 
-        const supplierId = req.user.supplierId;
+        const supplierId = supplier.id;
 
         // Get query parameters for filtering
         const { status, fromDate, toDate } = req.query;
