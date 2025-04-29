@@ -7,6 +7,7 @@ import productSupplierModel from "../../../DB/Models/productSupplier.model.js";
 import { Op } from "sequelize";
 import sequelize from "../../../DB/Connection.js";
 import { createSupplierOrderSchema, updateOrderStatusSchema, validateOrderId } from "./supplierOrder.validation.js";
+import categoryModel from "../../../DB/Models/category.model.js";
 
 /**
  * @desc    Get products for a specific supplier (for order creation)
@@ -38,7 +39,7 @@ export const getSupplierProducts = async (req, res) => {
         // Get all product IDs associated with this supplier
         const productSuppliers = await productSupplierModel.findAll({
             where: { supplierId },
-            attributes: ['productId']
+            attributes: ['productId', 'priceSupplier']  // Added priceSupplier
         });
 
         if (productSuppliers.length === 0) {
@@ -54,7 +55,13 @@ export const getSupplierProducts = async (req, res) => {
 
         const productIds = productSuppliers.map(ps => ps.productId);
 
-        // Get all products
+        // Create a map of productId to priceSupplier for easy lookup
+        const priceSupplierMap = productSuppliers.reduce((map, item) => {
+            map[item.productId] = item.priceSupplier;
+            return map;
+        }, {});
+
+        // Get all products with category information
         const products = await productModel.findAll({
             where: {
                 productId: { [Op.in]: productIds },
@@ -62,8 +69,22 @@ export const getSupplierProducts = async (req, res) => {
             },
             attributes: [
                 'productId', 'name', 'costPrice', 'sellPrice',
-                'quantity', 'image', 'description'
-            ]
+                'quantity', 'image', 'description', 'status'  // Added status
+            ],
+            include: [{
+                model: categoryModel,
+                as: 'category',
+                attributes: ['categoryID', 'categoryName']
+            }]
+        });
+
+        // Add priceSupplier to each product
+        const productsWithPriceSupplier = products.map(product => {
+            const plainProduct = product.get({ plain: true });
+            return {
+                ...plainProduct,
+                priceSupplier: priceSupplierMap[product.productId] || null
+            };
         });
 
         return res.status(200).json({
@@ -72,14 +93,13 @@ export const getSupplierProducts = async (req, res) => {
                 id: supplier.id,
                 name: supplier.user.name
             },
-            products
+            products: productsWithPriceSupplier
         });
     } catch (error) {
         console.error('Error fetching supplier products:', error);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
-
 /**
  * @desc    Get all suppliers that provide a specific product
  * @route   GET /api/supplierOrders/product/:productId/suppliers
@@ -711,3 +731,79 @@ export const getMySupplierOrders = async (req, res) => {
     }
 };
 //
+
+/**
+ * @desc    Update the price supplier sets for a product
+ * @route   PATCH /api/suppliers/:supplierId/products/:productId/price
+ * @access  Supplier (own products only)
+ */
+export const updateSupplierPrice = async (req, res) => {
+    try {
+        const { supplierId, productId } = req.params;
+
+
+        const { priceSupplier } = req.body;
+
+        // Check if supplier exists
+        const supplier = await supplierModel.findByPk(supplierId);
+        if (!supplier) {
+            return res.status(404).json({ message: 'Supplier not found' });
+        }
+
+        // Check if product exists
+        const product = await productModel.findByPk(productId);
+        if (!product) {
+            return res.status(404).json({ message: 'Product not found' });
+        }
+
+        // Make sure the user is the supplier or an admin
+        if (req.supplier && req.supplier.id !== parseInt(supplierId)) {
+            return res.status(403).json({ message: 'Access denied. Suppliers can only update their own prices' });
+        }
+
+        // Check if this product-supplier relationship exists
+        const productSupplier = await productSupplierModel.findOne({
+            where: {
+                productId,
+                supplierId
+            }
+        });
+
+        if (!productSupplier) {
+            return res.status(404).json({ message: 'This product is not associated with this supplier' });
+        }
+
+        // Update the price
+        await productSupplier.update({ priceSupplier });
+
+        // Get the updated record
+        const updatedRecord = await productSupplierModel.findOne({
+            where: {
+                productId,
+                supplierId
+            },
+            include: [
+                {
+                    model: productModel,
+                    as: 'product',
+                    attributes: ['productId', 'name', 'image']
+                }
+            ]
+        });
+
+        return res.status(200).json({
+            message: 'Supplier price updated successfully',
+            data: {
+                id: updatedRecord.id,
+                productId: updatedRecord.productId,
+                supplierId: updatedRecord.supplierId,
+                priceSupplier: updatedRecord.priceSupplier,
+                productName: updatedRecord.product ? updatedRecord.product.name : null,
+                productImage: updatedRecord.product ? updatedRecord.product.image : null
+            }
+        });
+    } catch (error) {
+        console.error('Error updating supplier price:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};

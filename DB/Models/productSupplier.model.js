@@ -22,8 +22,13 @@ const productSupplierModel = sequelize.define('ProductSupplier', {
         allowNull: false,
         references: {
             model: 'suppliers',
-            key: 'id' // Changed from supplierId to id
+            key: 'id'
         }
+    },
+    priceSupplier: {
+        type: DataTypes.FLOAT,
+        allowNull: true,
+        defaultValue: 0
     }
 }, {
     tableName: 'productsupplier',
@@ -32,7 +37,7 @@ const productSupplierModel = sequelize.define('ProductSupplier', {
     updatedAt: false
 });
 
-// Define associations
+// Define many-to-many associations
 productModel.belongsToMany(supplierModel, {
     through: productSupplierModel,
     foreignKey: 'productId',
@@ -45,6 +50,17 @@ supplierModel.belongsToMany(productModel, {
     foreignKey: 'supplierId',
     otherKey: 'productId',
     as: 'products'
+});
+
+// Define direct associations from join model to both models
+productSupplierModel.belongsTo(productModel, {
+    foreignKey: 'productId',
+    as: 'product'
+});
+
+productSupplierModel.belongsTo(supplierModel, {
+    foreignKey: 'supplierId',
+    as: 'supplier'
 });
 
 export default productSupplierModel;
