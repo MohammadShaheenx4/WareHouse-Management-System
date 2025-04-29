@@ -82,36 +82,30 @@ export const login = async (req, res) => {
     try {
         const { email, password } = req.body;
 
-
-
         if (!email || !password) {
             return res.status(400).json({ message: "Email and password are required." });
         }
-
 
         const user = await userModel.findOne({ where: { email } });
         if (!user) {
             return res.status(401).json({ message: "Invalid email or password." });
         }
 
-
         if (user.isActive !== "Active") {
             return res.status(403).json({ message: "Account is not active. Contact admin." });
         }
-
 
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
             return res.status(401).json({ message: "Invalid email or password." });
         }
 
-
         const token = jwt.sign(
             { userId: user.userId, email: user.email, roleName: user.roleName },
             process.env.JWT_SECRET || 'shaheen');
 
-
-        return res.status(200).json({
+        // Prepare response object
+        const responseObj = {
             message: "Login successful!",
             token,
             user: {
@@ -120,18 +114,26 @@ export const login = async (req, res) => {
                 roleName: user.roleName,
                 profilePicture: user.profilePicture,
                 name: user.name
-
             }
-        });
+        };
 
+        // If user is a supplier, get and include supplier ID
+        if (user.roleName === "Supplier") {
+            const supplier = await supplierModel.findOne({
+                where: { userId: user.userId }
+            });
 
+            if (supplier) {
+                responseObj.user.supplierId = supplier.id;
+            }
+        }
 
+        return res.status(200).json(responseObj);
     } catch (error) {
         console.error("Error during login:", error);
         return res.status(500).json({ message: "Internal Server Error" });
     }
 };
-
 
 
 
