@@ -187,7 +187,9 @@ export const createProduct = async (req, res) => {
         if (finalSupplierIds.length > 0) {
             const productSupplierEntries = finalSupplierIds.map(supplierId => ({
                 productId: newProduct.productId,
-                supplierId
+                supplierId,
+                priceSupplier: newProduct.costPrice, // Set priceSupplier equal to costPrice
+                status: 'Active' // Set default status to Active
             }));
 
             await productSupplierModel.bulkCreate(productSupplierEntries);

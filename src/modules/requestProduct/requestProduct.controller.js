@@ -308,15 +308,17 @@ export const updateProductRequestStatus = async (req, res) => {
                 image: productRequest.image
             });
 
-            // Create product-supplier association
+            // Create product-supplier association with priceSupplier set to costPrice
             await productSupplierModel.create({
                 productId: newProduct.productId,
-                supplierId: productRequest.supplierId
+                supplierId: productRequest.supplierId,
+                priceSupplier: newProduct.costPrice, // Set priceSupplier equal to costPrice
+                status: 'Active' // Set default status to Active
             });
         }
 
         // Get updated request with associations
-        const updatedRequest = await requestProductModel.findByPk(productRequest.requestId, {
+        const updatedRequest = await requestProductModel.findByPk(productRequest.id, {
             include: [
                 {
                     model: categoryModel,

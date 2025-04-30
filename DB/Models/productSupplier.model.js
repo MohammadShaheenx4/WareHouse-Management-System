@@ -29,6 +29,11 @@ const productSupplierModel = sequelize.define('ProductSupplier', {
         type: DataTypes.FLOAT,
         allowNull: true,
         defaultValue: 0
+    },
+    status: {
+        type: DataTypes.ENUM('Active', 'NotActive'),
+        allowNull: false,
+        defaultValue: 'Active'
     }
 }, {
     tableName: 'productsupplier',
