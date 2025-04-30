@@ -450,7 +450,9 @@ export const getSupplierProductRequests = async (req, res) => {
                 categoryName: plainRequest.category ? plainRequest.category.categoryName : null,
                 status: plainRequest.status,
                 costPrice: plainRequest.costPrice,
-                createdAt: plainRequest.createdAt
+                createdAt: plainRequest.createdAt,
+                adminNote: plainRequest.adminNote
+
             };
         });
 
