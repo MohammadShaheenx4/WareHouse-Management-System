@@ -6,7 +6,7 @@ import userModel from "../../../DB/Models/user.model.js";
 import productSupplierModel from "../../../DB/Models/productSupplier.model.js";
 import { Op } from "sequelize";
 import sequelize from "../../../DB/Connection.js";
-import { createSupplierOrderSchema, updateOrderStatusSchema, validateOrderId } from "./supplierOrder.validation.js";
+import { createSupplierOrderSchema, updateOrderStatusSchema, validateOrderId, updateSupplierProductSchema } from "./supplierOrder.validation.js";
 import categoryModel from "../../../DB/Models/category.model.js";
 
 /**
@@ -737,12 +737,18 @@ export const getMySupplierOrders = async (req, res) => {
  * @route   PATCH /api/suppliers/:supplierId/products/:productId/price
  * @access  Supplier (own products only)
  */
+
 export const updateSupplierPrice = async (req, res) => {
     try {
         const { supplierId, productId } = req.params;
 
+        // Validate request body
+        const { error } = updateSupplierProductSchema.validate(req.body);
+        if (error) {
+            return res.status(400).json({ message: error.details[0].message });
+        }
 
-        const { priceSupplier } = req.body;
+        const { priceSupplier, status } = req.body;
 
         // Check if supplier exists
         const supplier = await supplierModel.findByPk(supplierId);
@@ -758,7 +764,7 @@ export const updateSupplierPrice = async (req, res) => {
 
         // Make sure the user is the supplier or an admin
         if (req.supplier && req.supplier.id !== parseInt(supplierId)) {
-            return res.status(403).json({ message: 'Access denied. Suppliers can only update their own prices' });
+            return res.status(403).json({ message: 'Access denied. Suppliers can only update their own products' });
         }
 
         // Check if this product-supplier relationship exists
@@ -773,8 +779,16 @@ export const updateSupplierPrice = async (req, res) => {
             return res.status(404).json({ message: 'This product is not associated with this supplier' });
         }
 
-        // Update the price
-        await productSupplier.update({ priceSupplier });
+        // Create update object
+        const updateData = { priceSupplier };
+
+        // Add status to update data if provided
+        if (status) {
+            updateData.status = status;
+        }
+
+        // Update the price and status
+        await productSupplier.update(updateData);
 
         // Get the updated record
         const updatedRecord = await productSupplierModel.findOne({
@@ -792,18 +806,19 @@ export const updateSupplierPrice = async (req, res) => {
         });
 
         return res.status(200).json({
-            message: 'Supplier price updated successfully',
+            message: 'Supplier product updated successfully',
             data: {
                 id: updatedRecord.id,
                 productId: updatedRecord.productId,
                 supplierId: updatedRecord.supplierId,
                 priceSupplier: updatedRecord.priceSupplier,
+                status: updatedRecord.status,
                 productName: updatedRecord.product ? updatedRecord.product.name : null,
                 productImage: updatedRecord.product ? updatedRecord.product.image : null
             }
         });
     } catch (error) {
-        console.error('Error updating supplier price:', error);
+        console.error('Error updating supplier product:', error);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };

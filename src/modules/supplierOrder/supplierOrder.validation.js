@@ -57,7 +57,11 @@ export const updateOrderStatusSchema = Joi.object({
         otherwise: Joi.array().forbidden()
     })
 });
-
+// Create a validation schema for the update request
+export const updateSupplierProductSchema = Joi.object({
+    priceSupplier: Joi.number().min(0).optional(),
+    status: Joi.string().valid('Active', 'NotActive').optional()
+}).or('priceSupplier', 'status');
 // Get order by ID validation schema
 export const validateOrderId = Joi.object({
     id: Joi.number().integer().positive().required()
