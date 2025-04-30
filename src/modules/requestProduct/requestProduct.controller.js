@@ -393,3 +393,77 @@ export const deleteProductRequest = async (req, res) => {
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
+
+/**
+ * @desc    Get all product requests for a specific supplier
+ * @route   GET /api/product-requests/supplier/:supplierId
+ * @access  Admin/Supplier (own requests only)
+ */
+export const getSupplierProductRequests = async (req, res) => {
+    try {
+        const { supplierId } = req.params;
+
+        // Validate supplier ID
+        if (!supplierId || isNaN(supplierId)) {
+            return res.status(400).json({ message: 'Invalid supplier ID' });
+        }
+
+        // Check if supplier exists
+        const supplier = await supplierModel.findByPk(supplierId, {
+            include: [{
+                model: userModel,
+                as: 'user',
+                attributes: ['userId', 'name']
+            }]
+        });
+
+        if (!supplier) {
+            return res.status(404).json({ message: 'Supplier not found' });
+        }
+
+        // Check if supplier is requesting their own requests
+        if (req.supplier && req.supplier.id !== parseInt(supplierId)) {
+            return res.status(403).json({ message: 'Access denied. Suppliers can only view their own requests' });
+        }
+
+        // Get all product requests for this supplier
+        const productRequests = await requestProductModel.findAll({
+            where: { supplierId },
+            include: [
+                {
+                    model: categoryModel,
+                    as: 'category',
+                    attributes: ['categoryName']
+                }
+            ],
+            order: [['createdAt', 'DESC']]
+        });
+
+        // Format the response to include only the specified fields
+        const formattedRequests = productRequests.map(request => {
+            const plainRequest = request.get({ plain: true });
+
+            return {
+                id: plainRequest.id,
+                name: plainRequest.name,
+                image: plainRequest.image,
+                categoryName: plainRequest.category ? plainRequest.category.categoryName : null,
+                status: plainRequest.status,
+                costPrice: plainRequest.costPrice,
+                createdAt: plainRequest.createdAt
+            };
+        });
+
+        return res.status(200).json({
+            message: 'Supplier product requests retrieved successfully',
+            supplier: {
+                id: supplier.id,
+                name: supplier.user.name
+            },
+            productRequests: formattedRequests
+        });
+    } catch (error) {
+        console.error('Error fetching supplier product requests:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};

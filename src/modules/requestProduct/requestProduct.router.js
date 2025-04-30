@@ -41,4 +41,10 @@ router.delete('/:requestId',
     requestProductController.deleteProductRequest
 );
 
+router.get('/supplier/:supplierId',
+    Auth.isAuthenticated,
+    Auth.isAdminOrSupplier,
+    requestProductController.getSupplierProductRequests
+);
+
 export default router;
