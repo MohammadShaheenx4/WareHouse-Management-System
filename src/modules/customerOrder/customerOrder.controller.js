@@ -120,7 +120,7 @@ export const createOrder = async (req, res) => {
             orderItems.push({
                 productId: item.productId,
                 quantity: item.quantity,
-                sellPrice: product.sellPrice,  // Fixed: changed from Price to sellPrice
+                Price: product.sellPrice,  // Fixed: changed from Price to sellPrice
                 subtotal: subtotal
             });
         }
@@ -639,6 +639,21 @@ export const payOrderDebt = async (req, res) => {
     } catch (error) {
         await transaction.rollback();
         console.error('Error processing debt payment:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+export const getAllCategories = async (req, res) => {
+    try {
+        const categories = await categoryModel.findAll({
+            where: { status: 'Active' }
+        });
+        return res.status(200).json({
+            message: 'Active categories retrieved successfully',
+            categories
+        });
+    } catch (error) {
+        console.error('Error fetching active categories:', error);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };

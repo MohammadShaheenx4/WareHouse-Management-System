@@ -6,7 +6,8 @@ import {
     getOrderById,
     updateOrderStatus,
     getMyOrders,
-    payOrderDebt
+    payOrderDebt,
+    getAllCategories
 } from "./customerOrder.controller.js";
 import Auth from "../../middleware/authMiddleware.js";
 
@@ -14,6 +15,8 @@ const router = express.Router();
 
 // Public routes
 router.get("/category/:categoryId/products", getCategoryProducts);
+router.get("/all-category/", getAllCategories);
+
 
 // Protected routes - require authentication
 router.post("/", Auth.isAuthenticated, createOrder);
