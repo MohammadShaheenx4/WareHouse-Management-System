@@ -1,8 +1,8 @@
 import customerModel from "../../../DB/Models/customer.model.js";
 import userModel from "../../../DB/Models/user.model.js";
-import bcrypt from "bcrypt";
+import bcrypt from 'bcryptjs';
 import { updateCustomerProfileSchema, updatePasswordSchema, imageValidation } from ".//customer.validation.js";
-import cloudinary from "../../../utils/cloudinary.js";
+import cloudinary from "../../utils/cloudinary.js";
 import sequelize from "../../../DB/Connection.js";
 
 /**

@@ -3,20 +3,20 @@ import * as controller from './customer.controller.js';
 import fileUpload, { fileValidation } from '../../utils/multer.js';
 import Auth from '../../middleware/authMiddleware.js';
 
-const router = express.Router();
+const router = Router();
 
 
 
 // Get customer profile
-router.get("/profile", Auth.customerOnly, getCustomerProfile);
+router.get("/profile", controller.getCustomerProfile);
 
 // Update customer profile
-router.put("/profile", Auth.customerOnly, updateCustomerProfile);
+router.put("/profile", controller.updateCustomerProfile);
 
 // Update customer password
-router.put("/password", Auth.customerOnly, updateCustomerPassword);
+router.put("/password", controller.updateCustomerPassword);
 
 // Upload profile picture
-router.post("/profile-picture", Auth.customerOnly, fileUpload(fileValidation.image).single('profilePicture'), uploadProfilePicture);
+router.post("/profile-picture", fileUpload(fileValidation.image).single('profilePicture'), controller.uploadProfilePicture);
 
 export default router;

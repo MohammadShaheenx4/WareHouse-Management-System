@@ -7,6 +7,9 @@ import supplierOrderRoutes from './modules/supplierOrder/supplierOrder.router.js
 import supplierRouter from './modules/supplier/supplier.router.js'
 import requestProductRouter from './modules/requestProduct/requestProduct.router.js'
 import customerOrderRouter from './modules/customerOrder/customerOrder.router.js'
+import customerRouter from './modules/customer/customer.router.js'
+
+
 import 'dotenv/config'
 
 const initApp = async (app, express) => {
@@ -39,6 +42,8 @@ const initApp = async (app, express) => {
     app.use('/supplier', supplierRouter);
     app.use('/request-product', requestProductRouter);
     app.use('/customer-order', customerOrderRouter);
+    app.use('/customer-details', customerRouter);
+
 
 
 
