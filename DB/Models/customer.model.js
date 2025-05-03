@@ -1,32 +1,47 @@
 import { DataTypes } from 'sequelize';
-import sequelize from '../Connection.js'; // Ensure this file exists for DB connection
+import sequelize from '../Connection.js'; // Your connection file
+import userModel from './user.model.js'; // Import user model 
 
 const customerModel = sequelize.define('Customer', {
     id: {
         type: DataTypes.INTEGER,
         primaryKey: true,
-        autoIncrement: true,  // Automatically generate unique ID
+        autoIncrement: true,
     },
     userId: {
         type: DataTypes.INTEGER,
         allowNull: false,
         references: {
-            model: 'user', // The name of the referenced model, ensure it matches your users table
-            key: 'userId',
-        },
-        onDelete: 'CASCADE',  // Delete the customer record if the referenced user is deleted
-    },
-    accountBalance: {
-        type: DataTypes.DECIMAL(10, 2),
-        defaultValue: 0.00,  // Default balance when creating a customer
+            model: 'users', // Assuming your users table is named 'users'
+            key: 'id'
+        }
     },
     address: {
-        type: DataTypes.STRING(255),
-        allowNull: true,  // Allow address to be null
+        type: DataTypes.STRING,
+        allowNull: false
+    },
+    latitude: {
+        type: DataTypes.DECIMAL(10, 8),
+        allowNull: true
+    },
+    longitude: {
+        type: DataTypes.DECIMAL(11, 8),
+        allowNull: true
+    },
+    accountBalance: {
+        type: DataTypes.FLOAT,
+        allowNull: false,
+        defaultValue: 0.00
     }
 }, {
-    tableName: 'customers', // Ensure this matches the actual table name in the DB
-    timestamps: false,       // Enable timestamps if you want `createdAt` and `updatedAt`
+    tableName: 'customers',
+    timestamps: false
+});
+
+// Define association between customers and users
+customerModel.belongsTo(userModel, {
+    foreignKey: 'userId',
+    as: 'user'
 });
 
 export default customerModel;
