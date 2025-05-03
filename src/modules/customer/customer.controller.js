@@ -61,6 +61,12 @@ export const updateCustomerProfile = async (req, res) => {
     const transaction = await sequelize.transaction();
 
     try {
+        // Check if user object exists
+        if (!req.user || !req.user.userId) {
+            await transaction.rollback();
+            return res.status(401).json({ message: 'Authentication error: User not found in request' });
+        }
+
         // Validate request body
         const { error } = updateCustomerProfileSchema.validate(req.body);
         if (error) {

@@ -11,7 +11,7 @@ const router = Router();
 router.get("/profile", controller.getCustomerProfile);
 
 // Update customer profile
-router.put("/profile", controller.updateCustomerProfile);
+router.put("/profile", Auth.isAuthenticated, controller.updateCustomerProfile);
 
 // Update customer password
 router.put("/password", controller.updateCustomerPassword);
