@@ -15,7 +15,7 @@ const router = express.Router();
 
 // Public routes
 router.get("/category/:categoryId/products", getCategoryProducts);
-router.get("/all-category/", getAllCategories);
+router.get("/all-category", getAllCategories);
 
 
 // Protected routes - require authentication
