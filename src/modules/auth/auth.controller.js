@@ -128,14 +128,27 @@ export const login = async (req, res) => {
             }
         }
 
+        // If user is a customer, get and include customer information
+        if (user.roleName === "Customer") {
+            const customer = await customerModel.findOne({
+                where: { userId: user.userId }
+            });
+
+            if (customer) {
+                responseObj.user.customerId = customer.id;
+                responseObj.user.address = customer.address;
+                responseObj.user.latitude = customer.latitude;
+                responseObj.user.longitude = customer.longitude;
+                responseObj.user.accountBalance = customer.accountBalance;
+            }
+        }
+
         return res.status(200).json(responseObj);
     } catch (error) {
         console.error("Error during login:", error);
         return res.status(500).json({ message: "Internal Server Error" });
     }
 };
-
-
 
 
 export const resetPassword = async (req, res) => {
