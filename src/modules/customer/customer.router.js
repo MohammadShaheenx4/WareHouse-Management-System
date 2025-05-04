@@ -10,13 +10,9 @@ const router = Router();
 // Get customer profile
 router.get("/profile", Auth.isAuthenticated, controller.getCustomerProfile);
 
-// Update customer profile
-router.put("/profile", Auth.isAuthenticated, controller.updateCustomerProfile);
-
-// Update customer password
-router.put("/password", controller.updateCustomerPassword);
-
-// Upload profile picture
-router.post("/profile-picture", fileUpload(fileValidation.image).single('profilePicture'), controller.uploadProfilePicture);
+router.put("/profile",
+    Auth.isAuthenticated,
+    fileUpload(fileValidation.image).single('profilePicture'),
+    controller.updateCustomerProfile);
 
 export default router;

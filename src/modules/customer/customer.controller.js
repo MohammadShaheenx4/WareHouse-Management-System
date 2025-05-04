@@ -1,7 +1,7 @@
 import customerModel from "../../../DB/Models/customer.model.js";
 import userModel from "../../../DB/Models/user.model.js";
 import bcrypt from 'bcryptjs';
-import { updateCustomerProfileSchema, updatePasswordSchema, imageValidation } from ".//customer.validation.js";
+import { updateCustomerProfileSchema } from ".//customer.validation.js";
 import cloudinary from "../../utils/cloudinary.js";
 import sequelize from "../../../DB/Connection.js";
 
@@ -80,7 +80,10 @@ export const updateCustomerProfile = async (req, res) => {
         }
 
         const userId = req.user.userId;
-        const { email, password, phoneNumber, address, latitude, longitude } = req.body;
+        const {
+            email, phoneNumber, address, latitude, longitude,
+            currentPassword, newPassword
+        } = req.body;
 
         // Get customer and user records
         const customer = await customerModel.findOne({ where: { userId } });
@@ -104,27 +107,58 @@ export const updateCustomerProfile = async (req, res) => {
         const userUpdateData = {};
         const customerUpdateData = {};
 
-        // User table updates
-        if (email) userUpdateData.email = email;
-        if (phoneNumber) userUpdateData.phoneNumber = phoneNumber;
-        if (password) {
-            const hashedPassword = await bcrypt.hash(password, 10);
+        // Handle password changes
+        if (currentPassword && newPassword) {
+            // Verify current password
+            const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
+
+            if (!isPasswordValid) {
+                await transaction.rollback();
+                return res.status(401).json({ message: 'Current password is incorrect' });
+            }
+
+            // Hash new password
+            const hashedPassword = await bcrypt.hash(newPassword, 10);
             userUpdateData.password = hashedPassword;
         }
 
-        // Customer table updates
+        // Process profile picture update if file uploaded - simplified approach like updateUser
+        if (req.file) {
+            try {
+                const { secure_url } = await cloudinary.uploader.upload(req.file.path, {
+                    folder: 'warehouse/profiles'
+                });
+                userUpdateData.profilePicture = secure_url;
+            } catch (cloudinaryError) {
+                console.error('Error uploading to cloudinary:', cloudinaryError);
+                await transaction.rollback();
+                return res.status(500).json({ message: 'Error uploading profile picture. Please try again.' });
+            }
+        }
+
+        // Process regular profile updates
+        if (email) userUpdateData.email = email;
+        if (phoneNumber) userUpdateData.phoneNumber = phoneNumber;
+
         if (address) customerUpdateData.address = address;
         if (latitude !== undefined) customerUpdateData.latitude = latitude;
         if (longitude !== undefined) customerUpdateData.longitude = longitude;
 
-        // Update user record if there are changes
+        // Apply updates if there are any changes
         if (Object.keys(userUpdateData).length > 0) {
             await user.update(userUpdateData, { transaction });
         }
 
-        // Update customer record if there are changes
         if (Object.keys(customerUpdateData).length > 0) {
             await customer.update(customerUpdateData, { transaction });
+        }
+
+        // If no updates were made, inform the user
+        if (Object.keys(userUpdateData).length === 0 &&
+            Object.keys(customerUpdateData).length === 0 &&
+            !req.file) {
+            await transaction.rollback();
+            return res.status(400).json({ message: 'No updates provided' });
         }
 
         // Commit the transaction
@@ -140,8 +174,13 @@ export const updateCustomerProfile = async (req, res) => {
             }]
         });
 
+        // Prepare response message
+        let successMessage = 'Profile updated successfully';
+        if (currentPassword && newPassword) successMessage += ' with password change';
+        if (req.file) successMessage += ' with new profile picture';
+
         return res.status(200).json({
-            message: 'Customer profile updated successfully',
+            message: successMessage,
             customer: {
                 id: updatedCustomer.id,
                 address: updatedCustomer.address,
@@ -160,110 +199,6 @@ export const updateCustomerProfile = async (req, res) => {
     } catch (error) {
         await transaction.rollback();
         console.error('Error updating customer profile:', error);
-        return res.status(500).json({ message: 'Internal server error' });
-    }
-};
-
-/**
- * @desc    Update customer password
- * @route   PUT /api/customer/password
- * @access  Customer
- */
-export const updateCustomerPassword = async (req, res) => {
-    try {
-        // Validate request body
-        const { error } = updatePasswordSchema.validate(req.body);
-        if (error) {
-            return res.status(400).json({ message: error.details[0].message });
-        }
-
-        const userId = req.user.userId;
-        const { currentPassword, newPassword } = req.body;
-
-        // Get user record
-        const user = await userModel.findByPk(userId);
-
-        if (!user) {
-            return res.status(404).json({ message: 'User not found' });
-        }
-
-        // Verify current password
-        const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
-        if (!isPasswordValid) {
-            return res.status(401).json({ message: 'Current password is incorrect' });
-        }
-
-        // Hash new password
-        const hashedPassword = await bcrypt.hash(newPassword, 10);
-
-        // Update password
-        await user.update({ password: hashedPassword });
-
-        return res.status(200).json({
-            message: 'Password updated successfully'
-        });
-    } catch (error) {
-        console.error('Error updating password:', error);
-        return res.status(500).json({ message: 'Internal server error' });
-    }
-};
-
-/**
- * @desc    Upload profile picture
- * @route   POST /api/customer/profile-picture
- * @access  Customer
- */
-export const uploadProfilePicture = async (req, res) => {
-    try {
-        // Check if file exists
-        if (!req.file) {
-            return res.status(400).json({ message: 'Please upload an image' });
-        }
-
-        // Validate file type
-        if (!imageValidation.allowedTypes.includes(req.file.mimetype)) {
-            return res.status(400).json({
-                message: 'Invalid file type. Allowed types: JPG, JPEG, PNG,wepb'
-            });
-        }
-
-        // Validate file size
-        if (req.file.size > imageValidation.maxSize) {
-            return res.status(400).json({
-                message: 'File size too large. Maximum size: 5MB'
-            });
-        }
-
-        const userId = req.user.userId;
-
-        // Get user record
-        const user = await userModel.findByPk(userId);
-
-        if (!user) {
-            return res.status(404).json({ message: 'User not found' });
-        }
-
-        // Upload image to cloudinary
-        const result = await cloudinary.uploader.upload(req.file.path, {
-            folder: 'warehouse/profiles'
-        });
-
-        // Delete old profile picture from cloudinary if exists
-        if (user.profilePicture) {
-            // Extract public_id from the URL
-            const publicId = user.profilePicture.split('/').pop().split('.')[0];
-            await cloudinary.uploader.destroy(`warehouse/profiles/${publicId}`);
-        }
-
-        // Update user profile picture
-        await user.update({ profilePicture: result.secure_url });
-
-        return res.status(200).json({
-            message: 'Profile picture uploaded successfully',
-            profilePicture: result.secure_url
-        });
-    } catch (error) {
-        console.error('Error uploading profile picture:', error);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };

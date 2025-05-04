@@ -1,28 +1,29 @@
 import Joi from "joi";
 
-// Update customer profile validation schema
+// Combined profile update validation schema
 export const updateCustomerProfileSchema = Joi.object({
-    // User table fields
+    // General profile fields
     email: Joi.string().email().optional(),
-    password: Joi.string().min(6).optional(),
     phoneNumber: Joi.string().optional(),
-
-    // Customer table fields
     address: Joi.string().optional(),
     latitude: Joi.number().min(-90).max(90).optional(),
     longitude: Joi.number().min(-180).max(180).optional(),
-});
 
-// Update customer password validation schema
-export const updatePasswordSchema = Joi.object({
-    currentPassword: Joi.string().required(),
-    newPassword: Joi.string().min(6).required().disallow(Joi.ref('currentPassword')),
-    confirmPassword: Joi.string().valid(Joi.ref('newPassword')).required()
+    // Password update fields
+    currentPassword: Joi.string().optional(),
+    newPassword: Joi.string().min(6).optional(),
+    confirmPassword: Joi.string().valid(Joi.ref('newPassword')).optional()
         .messages({ 'any.only': 'Confirm password must match new password' })
-});
+}).custom((value, helpers) => {
+    // Custom validation: If one password field is provided, all are required
+    const { currentPassword, newPassword, confirmPassword } = value;
 
-// Upload profile picture validation
-export const imageValidation = {
-    allowedTypes: ['image/jpeg', 'image/png', 'image/jpg', 'image/webp'],
-    maxSize: 5 * 1024 * 1024 // 5MB
-};
+    if ((currentPassword || newPassword || confirmPassword) &&
+        !(currentPassword && newPassword && confirmPassword)) {
+        return helpers.error('object.passwordFields', {
+            message: 'All password fields (currentPassword, newPassword, confirmPassword) must be provided together'
+        });
+    }
+
+    return value;
+});
