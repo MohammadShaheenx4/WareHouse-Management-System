@@ -136,7 +136,7 @@ export const login = async (req, res) => {
 
             if (customer) {
                 responseObj.user.customerId = customer.id;
-                responseObj.user.address = customer.address;
+
                 responseObj.user.latitude = customer.latitude;
                 responseObj.user.longitude = customer.longitude;
                 responseObj.user.accountBalance = customer.accountBalance;
