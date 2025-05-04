@@ -12,6 +12,11 @@ import sequelize from "../../../DB/Connection.js";
  */
 export const getCustomerProfile = async (req, res) => {
     try {
+        // Check if user object exists
+        if (!req.user || !req.user.userId) {
+            return res.status(401).json({ message: 'Authentication error: User not found in request' });
+        }
+
         // Get customer ID from authenticated user
         const userId = req.user.userId;
 

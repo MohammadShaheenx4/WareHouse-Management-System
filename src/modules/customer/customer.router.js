@@ -8,7 +8,7 @@ const router = Router();
 
 
 // Get customer profile
-router.get("/profile", controller.getCustomerProfile);
+router.get("/profile", Auth.isAuthenticated, controller.getCustomerProfile);
 
 // Update customer profile
 router.put("/profile", Auth.isAuthenticated, controller.updateCustomerProfile);
