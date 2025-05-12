@@ -528,8 +528,67 @@ export const updateSupplierOrderStatus = async (req, res) => {
             }
         }
 
-        // Check if order can be updated
-        if (order.status !== 'Pending' && status !== 'Delivered') {
+        // Special logic for admin confirming a partially accepted order
+        // Special logic for admin confirming a partially accepted order
+        if (order.status === 'PartiallyAccepted' && status === 'Accepted') {
+            // Recalculate total cost based only on accepted items
+            let totalCost = 0;
+
+            // Important - Get fresh data for all items to ensure we have their current status
+            const orderItems = await supplierOrderItemModel.findAll({
+                where: { orderId: order.id }
+            });
+
+            // Only include items marked as 'Accepted' in the total cost
+            for (const orderItem of orderItems) {
+                if (orderItem.status === 'Accepted') {
+                    totalCost += orderItem.subtotal;
+                }
+                // Do NOT change the status of any items here
+            }
+
+            // Admin is confirming they're okay with the partial order - just update status
+            await order.update({
+                status,
+                totalCost, // Update with the correct total (excluding declined items)
+                note: note || `Admin accepted partial order on ${new Date().toISOString().split('T')[0]}`
+            }, { transaction });
+
+            await transaction.commit();
+
+            // Get updated order with all details
+            const updatedOrder = await supplierOrderModel.findByPk(orderId, {
+                include: [
+                    {
+                        model: supplierModel,
+                        as: 'supplier',
+                        attributes: ['id'],
+                        include: [{
+                            model: userModel,
+                            as: 'user',
+                            attributes: ['userId', 'name', 'email', 'phoneNumber']
+                        }]
+                    },
+                    {
+                        model: supplierOrderItemModel,
+                        as: 'items',
+                        include: [{
+                            model: productModel,
+                            as: 'product',
+                            attributes: ['productId', 'name', 'image']
+                        }]
+                    }
+                ]
+            });
+
+            return res.status(200).json({
+                message: `Order status updated to ${status} successfully by admin (declined items remain excluded)`,
+                order: updatedOrder
+            });
+        }
+
+        // Normal order status flow checks
+        if (order.status !== 'Pending' && order.status !== 'PartiallyAccepted' && status !== 'Delivered') {
             await transaction.rollback();
             return res.status(400).json({
                 message: `Cannot update order with status ${order.status} to ${status}`
@@ -543,79 +602,183 @@ export const updateSupplierOrderStatus = async (req, res) => {
             });
         }
 
-        // Update order status
-        const updateData = { status };
+        // New logic for handling partially accepted orders
+        let orderStatus = status;
+        let hasDeclinedItems = false;
+        let totalCost = 0;
+
+        // HANDLE SIMPLE ACCEPT: If status is Accepted and no items are provided, mark all items as accepted
+        if (status === 'Accepted' && (!items || items.length === 0)) {
+            // Update all order items to Accepted status
+            for (const orderItem of order.items) {
+                await orderItem.update({
+                    status: 'Accepted'
+                }, { transaction });
+
+                // Add to total cost
+                totalCost += orderItem.subtotal;
+            }
+
+            // Update order with new total cost
+            await order.update({
+                totalCost,
+                status: 'Accepted',
+                note: note || null
+            }, { transaction });
+
+            await transaction.commit();
+
+            // Get updated order with all details
+            const updatedOrder = await supplierOrderModel.findByPk(orderId, {
+                include: [
+                    {
+                        model: supplierModel,
+                        as: 'supplier',
+                        attributes: ['id'],
+                        include: [{
+                            model: userModel,
+                            as: 'user',
+                            attributes: ['userId', 'name', 'email', 'phoneNumber']
+                        }]
+                    },
+                    {
+                        model: supplierOrderItemModel,
+                        as: 'items',
+                        include: [{
+                            model: productModel,
+                            as: 'product',
+                            attributes: ['productId', 'name', 'image']
+                        }]
+                    }
+                ]
+            });
+
+            return res.status(200).json({
+                message: `Order status updated to Accepted successfully`,
+                order: updatedOrder
+            });
+        }
+
+        // Handle partial acceptance with specific item details
+        if (items && items.length > 0) {
+            // Create a mapping between productId and orderItem
+            const productToOrderItemMap = {};
+            for (const item of order.items) {
+                productToOrderItemMap[item.productId] = item;
+            }
+
+            // Validate that all products belong to this order
+            const orderProductIds = order.items.map(item => item.productId);
+            const providedProductIds = items.map(item => item.id); // Using id as productId
+
+            const invalidProductIds = providedProductIds.filter(id => !orderProductIds.includes(id));
+            if (invalidProductIds.length > 0) {
+                await transaction.rollback();
+                return res.status(400).json({
+                    message: 'Some items do not belong to this order',
+                    invalidItems: invalidProductIds
+                });
+            }
+
+            // First pass: identify which items are explicitly declined
+            for (const item of items) {
+                if (item.status === 'Declined') {
+                    hasDeclinedItems = true;
+                }
+            }
+
+            // If status is Accepted and we have explicit item updates
+            if (status === 'Accepted') {
+                const processedProductIds = new Set();
+
+                // Process explicitly provided items
+                for (const item of items) {
+                    const productId = item.id; // Using id as productId
+                    const orderItem = productToOrderItemMap[productId];
+                    processedProductIds.add(productId);
+
+                    if (!orderItem) {
+                        continue; // Skip if order item not found
+                    }
+
+                    // Update item status
+                    await orderItem.update({
+                        status: item.status
+                    }, { transaction });
+
+                    // Update cost price if provided
+                    if (item.status === 'Accepted' && item.costPrice && item.costPrice !== orderItem.costPrice) {
+                        await orderItem.update({
+                            costPrice: item.costPrice,
+                            subtotal: item.costPrice * (item.quantity || orderItem.quantity)
+                        }, { transaction });
+                    }
+
+                    // Update quantity if provided
+                    if (item.status === 'Accepted' && item.quantity && item.quantity !== orderItem.quantity) {
+                        await orderItem.update({
+                            quantity: item.quantity,
+                            subtotal: (item.costPrice || orderItem.costPrice) * item.quantity
+                        }, { transaction });
+                    }
+
+                    // Update production and expiry dates if provided
+                    if (item.status === 'Accepted' && (item.prodDate || item.expDate)) {
+                        const updateData = {};
+                        if (item.prodDate) updateData.prodDate = item.prodDate;
+                        if (item.expDate) updateData.expDate = item.expDate;
+
+                        await orderItem.update(updateData, { transaction });
+                    }
+                }
+
+                // Automatically set all other items as Accepted if not explicitly mentioned
+                for (const orderItem of order.items) {
+                    if (!processedProductIds.has(orderItem.productId)) {
+                        // This item wasn't explicitly mentioned, so it's automatically Accepted
+                        await orderItem.update({
+                            status: 'Accepted'
+                        }, { transaction });
+                    }
+                }
+
+                // Recalculate total cost (only for accepted items)
+                for (const orderItem of order.items) {
+                    const updatedItem = await supplierOrderItemModel.findByPk(orderItem.id);
+                    if (updatedItem.status === 'Accepted') {
+                        totalCost += updatedItem.subtotal;
+                    }
+                }
+
+                // If any items were declined, change order status to 'PartiallyAccepted'
+                if (hasDeclinedItems) {
+                    orderStatus = 'PartiallyAccepted'; // New status for partially accepted orders
+                }
+
+                // Update order total cost
+                await order.update({ totalCost }, { transaction });
+            }
+        }
+
+        // Update order status and note
+        const updateData = { status: orderStatus };
         if (note) updateData.note = note;
 
         await order.update(updateData, { transaction });
 
-        // If status is Accepted, update product cost prices if needed
-        if (status === 'Accepted' && items && items.length > 0) {
-            // Validate that all items belong to this order
-            const orderItemIds = order.items.map(item => item.id);
-            const providedItemIds = items.map(item => item.id);
-
-            const invalidItemIds = providedItemIds.filter(id => !orderItemIds.includes(id));
-            if (invalidItemIds.length > 0) {
-                await transaction.rollback();
-                return res.status(400).json({
-                    message: 'Some items do not belong to this order',
-                    invalidItems: invalidItemIds
-                });
-            }
-
-            // Create order item lookup for faster access
-            const orderItemMap = order.items.reduce((map, item) => {
-                map[item.id] = item;
-                return map;
-            }, {});
-
-            // Process item updates
-            let totalCost = 0;
-
-            for (const item of items) {
-                const orderItem = orderItemMap[item.id];
-
-                // Update cost price if provided
-                if (item.costPrice && item.costPrice !== orderItem.costPrice) {
-                    await orderItem.update({
-                        costPrice: item.costPrice,
-                        subtotal: item.costPrice * (item.quantity || orderItem.quantity)
-                    }, { transaction });
-                }
-
-                // Update quantity if provided
-                if (item.quantity && item.quantity !== orderItem.quantity) {
-                    await orderItem.update({
-                        quantity: item.quantity,
-                        subtotal: (item.costPrice || orderItem.costPrice) * item.quantity
-                    }, { transaction });
-                }
-
-                // Recalculate subtotal for unchanged items
-                if (!item.costPrice && !item.quantity) {
-                    totalCost += orderItem.subtotal;
-                } else {
-                    // Use the updated values
-                    const updatedItem = await supplierOrderItemModel.findByPk(item.id);
-                    totalCost += updatedItem.subtotal;
-                }
-            }
-
-            // Update order total cost
-            await order.update({ totalCost }, { transaction });
-        }
-
         // If status is Delivered, update product quantities
         if (status === 'Delivered') {
             for (const item of order.items) {
-                const product = await productModel.findByPk(item.productId);
+                // Only update inventory for accepted items
+                if (item.status === 'Accepted') {
+                    const product = await productModel.findByPk(item.productId);
 
-                if (product) {
-                    // Update product quantity by adding the ordered quantity
-                    await product.update({
-                        quantity: product.quantity + item.quantity
-                    }, { transaction });
+                    if (product) {
+                        // Update product quantity by adding the ordered quantity
+                        await product.update({
+                            quantity: product.quantity + item.quantity
+                        }, { transaction });
+                    }
                 }
             }
         }
@@ -649,7 +812,7 @@ export const updateSupplierOrderStatus = async (req, res) => {
         });
 
         return res.status(200).json({
-            message: `Order status updated to ${status} successfully`,
+            message: `Order status updated to ${orderStatus} successfully`,
             order: updatedOrder
         });
     } catch (error) {

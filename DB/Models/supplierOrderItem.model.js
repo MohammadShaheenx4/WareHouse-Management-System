@@ -36,6 +36,19 @@ const supplierOrderItemModel = sequelize.define('SupplierorderItem', {
         type: DataTypes.FLOAT,
         allowNull: false
     },
+    status: {
+        type: DataTypes.ENUM('Accepted', 'Declined'),
+        defaultValue: null,
+        allowNull: true
+    },
+    prodDate: {
+        type: DataTypes.DATE,
+        allowNull: true
+    },
+    expDate: {
+        type: DataTypes.DATE,
+        allowNull: true
+    },
     originalCostPrice: {
         type: DataTypes.FLOAT,
         allowNull: false,

@@ -165,7 +165,7 @@ export const fileValidation = Joi.object({
     fieldname: Joi.string().required(),
     originalname: Joi.string().required(),
     encoding: Joi.string().required(),
-    mimetype: Joi.string().valid('image/jpeg', 'image/png', 'image/jpg', 'image/gif').required()
+    mimetype: Joi.string().valid('image/jpeg', 'image/png', 'image/jpg', 'image/gif', 'image/webp').required()
         .messages({
             'any.only': 'Only image files (jpeg, png, jpg, gif) are allowed'
         }),

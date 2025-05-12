@@ -18,7 +18,7 @@ const supplierOrderModel = sequelize.define('Supplierorder', {
         }
     },
     status: {
-        type: DataTypes.ENUM('Pending', 'Accepted', 'Declined', 'Delivered'),
+        type: DataTypes.ENUM('Pending', 'PartiallyAccepted', 'Accepted', 'Declined', 'Delivered'),
         defaultValue: 'Pending',
         allowNull: false
     },
