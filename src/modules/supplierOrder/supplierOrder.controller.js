@@ -36,10 +36,10 @@ export const getSupplierProducts = async (req, res) => {
             return res.status(404).json({ message: 'Supplier not found' });
         }
 
-        // Get all product IDs associated with this supplier
+        // Get all product-supplier relationships for this supplier including status
         const productSuppliers = await productSupplierModel.findAll({
             where: { supplierId },
-            attributes: ['productId', 'priceSupplier']  // Added priceSupplier
+            attributes: ['productId', 'priceSupplier', 'status']
         });
 
         if (productSuppliers.length === 0) {
@@ -55,21 +55,23 @@ export const getSupplierProducts = async (req, res) => {
 
         const productIds = productSuppliers.map(ps => ps.productId);
 
-        // Create a map of productId to priceSupplier for easy lookup
-        const priceSupplierMap = productSuppliers.reduce((map, item) => {
-            map[item.productId] = item.priceSupplier;
+        // Create a map of productId to priceSupplier and status for easy lookup
+        const supplierInfoMap = productSuppliers.reduce((map, item) => {
+            map[item.productId] = {
+                priceSupplier: item.priceSupplier,
+                status: item.status
+            };
             return map;
         }, {});
 
         // Get all products with category information
         const products = await productModel.findAll({
             where: {
-                productId: { [Op.in]: productIds },
-                status: 'Active'
+                productId: { [Op.in]: productIds }
             },
             attributes: [
                 'productId', 'name', 'costPrice', 'sellPrice',
-                'quantity', 'image', 'description', 'status'  // Added status
+                'quantity', 'image', 'description'
             ],
             include: [{
                 model: categoryModel,
@@ -78,12 +80,15 @@ export const getSupplierProducts = async (req, res) => {
             }]
         });
 
-        // Add priceSupplier to each product
-        const productsWithPriceSupplier = products.map(product => {
+        // Add priceSupplier and status from productSupplier table to each product
+        const productsWithSupplierInfo = products.map(product => {
             const plainProduct = product.get({ plain: true });
+            const supplierInfo = supplierInfoMap[product.productId] || { priceSupplier: null, status: null };
+
             return {
                 ...plainProduct,
-                priceSupplier: priceSupplierMap[product.productId] || null
+                priceSupplier: supplierInfo.priceSupplier,
+                status: supplierInfo.status // Using status from productSupplier
             };
         });
 
@@ -93,7 +98,7 @@ export const getSupplierProducts = async (req, res) => {
                 id: supplier.id,
                 name: supplier.user.name
             },
-            products: productsWithPriceSupplier
+            products: productsWithSupplierInfo // Return all products with their statuses
         });
     } catch (error) {
         console.error('Error fetching supplier products:', error);
@@ -188,7 +193,7 @@ export const createSupplierOrder = async (req, res) => {
             return res.status(400).json({ message: error.details[0].message });
         }
 
-        let { supplierId, supplierName, items } = req.body;
+        let { supplierId, supplierName, items, note } = req.body;
 
         // If supplierName is provided instead of supplierId, find the supplier
         if (!supplierId && supplierName) {
@@ -239,6 +244,7 @@ export const createSupplierOrder = async (req, res) => {
         // Verify this supplier provides all these products
         const productIds = items.map(item => item.productId);
 
+        // Get all product-supplier relationships in one query
         const productSuppliers = await productSupplierModel.findAll({
             where: {
                 supplierId,
@@ -264,7 +270,13 @@ export const createSupplierOrder = async (req, res) => {
             });
         }
 
-        // Get the products to get their current cost prices
+        // Create productSupplier lookup map for faster access to priceSupplier
+        const productSupplierMap = productSuppliers.reduce((map, ps) => {
+            map[ps.productId] = ps;
+            return map;
+        }, {});
+
+        // Get the products to have their details available
         const products = await productModel.findAll({
             where: { productId: { [Op.in]: productIds } }
         });
@@ -281,15 +293,31 @@ export const createSupplierOrder = async (req, res) => {
 
         for (const item of items) {
             const product = productMap[item.productId];
-            const costPrice = item.costPrice || product.costPrice;
-            const subtotal = costPrice * item.quantity;
+            const productSupplier = productSupplierMap[item.productId];
+
+            // Determine the cost price to use (priority: item.costPrice > productSupplier.priceSupplier > product.costPrice)
+            let costPrice;
+            if (item.costPrice) {
+                // Use the provided cost price if specified in the request
+                costPrice = parseFloat(item.costPrice);
+            } else if (productSupplier && productSupplier.priceSupplier) {
+                // Use the supplier-specific price from productSupplier table
+                costPrice = parseFloat(productSupplier.priceSupplier);
+            } else {
+                // Fall back to product's general cost price
+                costPrice = parseFloat(product.costPrice) || 0;
+            }
+
+            const quantity = parseInt(item.quantity);
+            const subtotal = costPrice * quantity;
 
             orderItems.push({
                 productId: item.productId,
-                quantity: item.quantity,
+                quantity: quantity,
                 costPrice: costPrice,
-                originalCostPrice: product.costPrice,
-                subtotal: subtotal
+                originalCostPrice: costPrice, // Store as original for reference
+                subtotal: subtotal,
+                status: null // Initially null, will be set when supplier responds
             });
 
             totalCost += subtotal;
@@ -299,7 +327,8 @@ export const createSupplierOrder = async (req, res) => {
         const newOrder = await supplierOrderModel.create({
             supplierId,
             totalCost,
-            status: 'Pending'
+            status: 'Pending',
+            note: note || null
         }, { transaction });
 
         // Create order items
@@ -505,12 +534,20 @@ export const updateSupplierOrderStatus = async (req, res) => {
         const orderId = req.params.id;
         const { status, note, items } = req.body;
 
-        // Get the order
+        // Get the order with all related data
         const order = await supplierOrderModel.findByPk(orderId, {
             include: [
                 {
                     model: supplierOrderItemModel,
-                    as: 'items'
+                    as: 'items',
+                    include: [{
+                        model: productModel,
+                        as: 'product'
+                    }]
+                },
+                {
+                    model: supplierModel,
+                    as: 'supplier'
                 }
             ]
         });
@@ -529,12 +566,11 @@ export const updateSupplierOrderStatus = async (req, res) => {
         }
 
         // Special logic for admin confirming a partially accepted order
-        // Special logic for admin confirming a partially accepted order
         if (order.status === 'PartiallyAccepted' && status === 'Accepted') {
             // Recalculate total cost based only on accepted items
             let totalCost = 0;
 
-            // Important - Get fresh data for all items to ensure we have their current status
+            // Get fresh data for all items
             const orderItems = await supplierOrderItemModel.findAll({
                 where: { orderId: order.id }
             });
@@ -542,9 +578,8 @@ export const updateSupplierOrderStatus = async (req, res) => {
             // Only include items marked as 'Accepted' in the total cost
             for (const orderItem of orderItems) {
                 if (orderItem.status === 'Accepted') {
-                    totalCost += orderItem.subtotal;
+                    totalCost += parseFloat(orderItem.subtotal) || 0;
                 }
-                // Do NOT change the status of any items here
             }
 
             // Admin is confirming they're okay with the partial order - just update status
@@ -616,7 +651,7 @@ export const updateSupplierOrderStatus = async (req, res) => {
                 }, { transaction });
 
                 // Add to total cost
-                totalCost += orderItem.subtotal;
+                totalCost += parseFloat(orderItem.subtotal) || 0;
             }
 
             // Update order with new total cost
@@ -687,97 +722,144 @@ export const updateSupplierOrderStatus = async (req, res) => {
                 }
             }
 
-            // If status is Accepted and we have explicit item updates
-            if (status === 'Accepted') {
-                const processedProductIds = new Set();
+            // Process explicitly provided items
+            const processedProductIds = new Set();
 
-                // Process explicitly provided items
-                for (const item of items) {
-                    const productId = item.id; // Using id as productId
-                    const orderItem = productToOrderItemMap[productId];
-                    processedProductIds.add(productId);
+            for (const item of items) {
+                const productId = item.id; // Using id as productId
+                const orderItem = productToOrderItemMap[productId];
+                processedProductIds.add(productId);
 
-                    if (!orderItem) {
-                        continue; // Skip if order item not found
-                    }
+                if (!orderItem) {
+                    continue; // Skip if order item not found
+                }
 
-                    // Update item status
+                // Update item status
+                await orderItem.update({
+                    status: item.status
+                }, { transaction });
+
+                // If supplier is updating price, update both orderItem and productSupplier
+                if (item.status === 'Accepted' && item.costPrice) {
+                    // Get the corresponding productSupplier record
+                    const productSupplier = await productSupplierModel.findOne({
+                        where: {
+                            productId: productId,
+                            supplierId: order.supplierId
+                        }
+                    });
+
+                    // Calculate new subtotal with the updated price
+                    const newQuantity = item.quantity || orderItem.quantity;
+                    const newCostPrice = parseFloat(item.costPrice);
+                    const newSubtotal = newCostPrice * newQuantity;
+
+                    // Update the order item with new price and subtotal
                     await orderItem.update({
-                        status: item.status
+                        costPrice: newCostPrice,
+                        subtotal: newSubtotal
                     }, { transaction });
 
-                    // Update cost price if provided
-                    if (item.status === 'Accepted' && item.costPrice && item.costPrice !== orderItem.costPrice) {
-                        await orderItem.update({
-                            costPrice: item.costPrice,
-                            subtotal: item.costPrice * (item.quantity || orderItem.quantity)
-                        }, { transaction });
-                    }
-
-                    // Update quantity if provided
-                    if (item.status === 'Accepted' && item.quantity && item.quantity !== orderItem.quantity) {
-                        await orderItem.update({
-                            quantity: item.quantity,
-                            subtotal: (item.costPrice || orderItem.costPrice) * item.quantity
-                        }, { transaction });
-                    }
-
-                    // Update production and expiry dates if provided
-                    if (item.status === 'Accepted' && (item.prodDate || item.expDate)) {
-                        const updateData = {};
-                        if (item.prodDate) updateData.prodDate = item.prodDate;
-                        if (item.expDate) updateData.expDate = item.expDate;
-
-                        await orderItem.update(updateData, { transaction });
-                    }
-                }
-
-                // Automatically set all other items as Accepted if not explicitly mentioned
-                for (const orderItem of order.items) {
-                    if (!processedProductIds.has(orderItem.productId)) {
-                        // This item wasn't explicitly mentioned, so it's automatically Accepted
-                        await orderItem.update({
-                            status: 'Accepted'
+                    // Update the productSupplier record with the new price
+                    if (productSupplier) {
+                        await productSupplier.update({
+                            priceSupplier: newCostPrice
                         }, { transaction });
                     }
                 }
 
-                // Recalculate total cost (only for accepted items)
-                for (const orderItem of order.items) {
-                    const updatedItem = await supplierOrderItemModel.findByPk(orderItem.id);
-                    if (updatedItem.status === 'Accepted') {
-                        totalCost += updatedItem.subtotal;
-                    }
+                // Update quantity if provided
+                if (item.status === 'Accepted' && item.quantity && item.quantity !== orderItem.quantity) {
+                    // Recalculate subtotal with new quantity
+                    const currentCostPrice = item.costPrice || orderItem.costPrice;
+                    const newSubtotal = parseFloat(currentCostPrice) * item.quantity;
+
+                    await orderItem.update({
+                        quantity: item.quantity,
+                        subtotal: newSubtotal
+                    }, { transaction });
                 }
 
-                // If any items were declined, change order status to 'PartiallyAccepted'
-                if (hasDeclinedItems) {
-                    orderStatus = 'PartiallyAccepted'; // New status for partially accepted orders
-                }
+                // Update production and expiry dates if provided
+                if (item.status === 'Accepted' && (item.prodDate || item.expDate)) {
+                    const updateData = {};
+                    if (item.prodDate) updateData.prodDate = item.prodDate;
+                    if (item.expDate) updateData.expDate = item.expDate;
 
-                // Update order total cost
-                await order.update({ totalCost }, { transaction });
+                    await orderItem.update(updateData, { transaction });
+                }
             }
+
+            // Automatically set all other items as Accepted if not explicitly mentioned
+            for (const orderItem of order.items) {
+                if (!processedProductIds.has(orderItem.productId)) {
+                    // This item wasn't explicitly mentioned, so it's automatically Accepted
+                    await orderItem.update({
+                        status: 'Accepted'
+                    }, { transaction });
+                }
+            }
+
+            // Get all updated items to calculate the total cost correctly
+            const updatedItems = await supplierOrderItemModel.findAll({
+                where: { orderId: order.id }
+            });
+
+            // Calculate total cost based only on accepted items
+            totalCost = 0;
+            for (const item of updatedItems) {
+                if (item.status === 'Accepted') {
+                    totalCost += parseFloat(item.subtotal) || 0;
+                }
+            }
+
+            // If any items were declined, change order status to 'PartiallyAccepted'
+            if (hasDeclinedItems) {
+                orderStatus = 'PartiallyAccepted';
+            }
+
+            // Update order with new status, totalCost, and note
+            await order.update({
+                status: orderStatus,
+                totalCost: totalCost,
+                note: note || null
+            }, { transaction });
         }
-
-        // Update order status and note
-        const updateData = { status: orderStatus };
-        if (note) updateData.note = note;
-
-        await order.update(updateData, { transaction });
 
         // If status is Delivered, update product quantities
         if (status === 'Delivered') {
-            for (const item of order.items) {
+            // Get fresh order items data
+            const orderItems = await supplierOrderItemModel.findAll({
+                where: { orderId: order.id },
+                include: [{
+                    model: productModel,
+                    as: 'product'
+                }]
+            });
+
+            for (const item of orderItems) {
                 // Only update inventory for accepted items
                 if (item.status === 'Accepted') {
-                    const product = await productModel.findByPk(item.productId);
+                    const product = item.product;
 
                     if (product) {
                         // Update product quantity by adding the ordered quantity
+                        const currentQuantity = parseFloat(product.quantity) || 0;
+                        const itemQuantity = parseFloat(item.quantity) || 0;
+                        const newQuantity = currentQuantity + itemQuantity;
+
                         await product.update({
-                            quantity: product.quantity + item.quantity
+                            quantity: newQuantity
                         }, { transaction });
+
+                        // Update production and expiration dates if they were set on the order item
+                        if (item.prodDate || item.expDate) {
+                            const updateData = {};
+                            if (item.prodDate) updateData.prodDate = item.prodDate;
+                            if (item.expDate) updateData.expDate = item.expDate;
+
+                            await product.update(updateData, { transaction });
+                        }
                     }
                 }
             }
@@ -811,8 +893,31 @@ export const updateSupplierOrderStatus = async (req, res) => {
             ]
         });
 
+        // Final verification of totalCost
+        if ((updatedOrder.status === 'Accepted' || updatedOrder.status === 'PartiallyAccepted') &&
+            (updatedOrder.totalCost === 0 || updatedOrder.totalCost === null)) {
+
+            // Recalculate one more time
+            let verifiedTotalCost = 0;
+            for (const item of updatedOrder.items) {
+                if (item.status === 'Accepted') {
+                    verifiedTotalCost += parseFloat(item.subtotal) || 0;
+                }
+            }
+
+            if (verifiedTotalCost > 0) {
+                // Fix the total if it should not be zero
+                await supplierOrderModel.update(
+                    { totalCost: verifiedTotalCost },
+                    { where: { id: orderId } }
+                );
+
+                updatedOrder.totalCost = verifiedTotalCost;
+            }
+        }
+
         return res.status(200).json({
-            message: `Order status updated to ${orderStatus} successfully`,
+            message: `Order status updated to ${updatedOrder.status} successfully`,
             order: updatedOrder
         });
     } catch (error) {
