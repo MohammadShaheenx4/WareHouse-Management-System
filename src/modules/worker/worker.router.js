@@ -38,7 +38,7 @@ router.get("/profile", Auth.isAuthenticated, isWarehouseEmployee, getProfile);
 router.get("/customer-orders", Auth.isAuthenticated, getPendingCustomerOrders);
 router.get("/supplier-orders", Auth.isAuthenticated, getPendingSupplierOrders);
 router.get("/customer-orders/:id", Auth.isAuthenticated, getCustomerOrderById);
-router.get("/supplier-orders/:id", Auth.isAuthenticated, isWarehouseEmployee, getSupplierOrderById);
+router.get("/supplier-orders/:id", Auth.isAuthenticated, getSupplierOrderById);
 router.put("/customer-orders/:id", Auth.isAuthenticated, updateCustomerOrderStatus);
 router.put("/supplier-orders/:id", Auth.isAuthenticated, receiveSupplierOrder);
 router.get("/orders-history", Auth.isAuthenticated, getOrdersHistory);
