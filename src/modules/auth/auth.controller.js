@@ -7,6 +7,7 @@ import { sendEmail } from "../../utils/sendEmail.js";
 import { DataTypes } from 'sequelize';
 import supplierModel from '../../../DB/Models/supplier.model.js'; // Import the supplier model
 import customerModel from '../../../DB/Models/customer.model.js'; // Import the supplier model
+import warehouseEmployeeModel from '../../../DB/Models/WareHouseEmployee.model.js';
 import cloudinary from "../../utils/cloudinary.js";
 
 
@@ -42,7 +43,7 @@ export const register = async (req, res, next) => {
             roleName
         });
 
-
+        // If the role is Supplier, insert into the suppliers table
         if (roleName === 'Supplier') {
             await supplierModel.create({
                 userId: newUser.userId,  // Link supplier to the new user via userId
@@ -58,6 +59,14 @@ export const register = async (req, res, next) => {
                 address: address || null,  // Address provided in the request
             });
         }
+
+        // If the role is warehouseEmployee, insert into the warehouseemployee table
+        if (roleName === 'warehouseEmployee') {
+            await warehouseEmployeeModel.create({
+                userId: newUser.userId   // Link warehouse employee to the new user via userId
+            });
+        }
+
         // Send the generated password to the user's email
         await sendEmail({
             userEmail: newUser.email,

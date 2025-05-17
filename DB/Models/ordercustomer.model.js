@@ -18,7 +18,7 @@ const customerOrderModel = sequelize.define('Customerorder', {
         }
     },
     status: {
-        type: DataTypes.ENUM('Pending', 'Accepted', 'Rejected', 'Prepared', 'on_theway', 'Shipped'),
+        type: DataTypes.ENUM('Pending', 'Accepted', 'Rejected', 'Preparing', 'Prepared', 'on_theway', 'Shipped'),
         defaultValue: 'Pending',
         allowNull: false
     },
