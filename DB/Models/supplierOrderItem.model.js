@@ -41,6 +41,11 @@ const supplierOrderItemModel = sequelize.define('SupplierorderItem', {
         defaultValue: null,
         allowNull: true
     },
+    // Add to your supplierOrderItemModel.js file
+    receivedQuantity: {
+        type: DataTypes.INTEGER,
+        allowNull: true
+    },
     prodDate: {
         type: DataTypes.DATE,
         allowNull: true

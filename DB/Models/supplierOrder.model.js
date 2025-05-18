@@ -1,6 +1,7 @@
 import { DataTypes } from 'sequelize';
 import sequelize from '../Connection.js';
 import supplierModel from './supplier.model.js';
+import warehouseEmployeeModel from './WareHouseEmployee.model.js';
 import userModel from './user.model.js';
 
 const supplierOrderModel = sequelize.define('Supplierorder', {
@@ -31,6 +32,18 @@ const supplierOrderModel = sequelize.define('Supplierorder', {
         type: DataTypes.FLOAT,
         allowNull: false,
         defaultValue: 0
+    },
+    receivedBy: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        references: {
+            model: 'warehouseemployee',
+            key: 'id'
+        }
+    },
+    receivedAt: {
+        type: DataTypes.DATE,
+        allowNull: true
     }
 }, {
     tableName: 'supplierorders',
@@ -41,6 +54,12 @@ const supplierOrderModel = sequelize.define('Supplierorder', {
 supplierOrderModel.belongsTo(supplierModel, {
     foreignKey: 'supplierId',
     as: 'supplier'
+});
+
+// Add association to warehouseEmployee
+supplierOrderModel.belongsTo(warehouseEmployeeModel, {
+    foreignKey: 'receivedBy',
+    as: 'receiver'
 });
 
 // Include this if you want to access orders from supplier model

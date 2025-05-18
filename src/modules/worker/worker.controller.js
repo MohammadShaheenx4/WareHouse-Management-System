@@ -102,7 +102,7 @@ export const getPendingSupplierOrders = async (req, res) => {
         // Get orders with status 'Accepted' or 'PartiallyAccepted'
         const pendingOrders = await supplierOrderModel.findAll({
             where: {
-                status: ['Accepted', 'PartiallyAccepted']
+                status: ['Accepted']
             },
             include: [
                 {
