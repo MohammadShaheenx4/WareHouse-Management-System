@@ -99,7 +99,7 @@ export const getPendingSupplierOrders = async (req, res) => {
             return res.status(403).json({ message: 'Access denied. User is not a warehouse employee' });
         }
 
-        // Get orders with status 'Accepted' or 'PartiallyAccepted'
+        // Get orders with status 'Accepted'
         const pendingOrders = await supplierOrderModel.findAll({
             where: {
                 status: ['Accepted']
@@ -117,6 +117,9 @@ export const getPendingSupplierOrders = async (req, res) => {
                 {
                     model: supplierOrderItemModel,
                     as: 'items',
+                    where: {
+                        status: 'Accepted' // Only include items with 'Accepted' status
+                    },
                     include: [{
                         model: productModel,
                         as: 'product',
@@ -127,9 +130,6 @@ export const getPendingSupplierOrders = async (req, res) => {
             order: [['createdAt', 'ASC']] // Oldest first
         });
 
-        // Remove logging for list view to avoid null orderId issue
-        // await createActivityLog(...) - removed
-
         return res.status(200).json({
             count: pendingOrders.length,
             pendingOrders
@@ -139,7 +139,6 @@ export const getPendingSupplierOrders = async (req, res) => {
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
-
 // Get customer order by ID with logging
 export const getCustomerOrderById = async (req, res) => {
     try {
