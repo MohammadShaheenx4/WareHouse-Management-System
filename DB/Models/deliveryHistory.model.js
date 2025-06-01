@@ -34,13 +34,18 @@ const deliveryHistoryModel = sequelize.define('DeliveryHistory', {
             key: 'id'
         }
     },
+    assignedTime: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        comment: 'When the order was assigned to delivery employee by admin'
+    },
     startTime: {
         type: DataTypes.DATE,
-        allowNull: false
+        allowNull: true  // Changed to true - null when assigned, set when delivery employee starts
     },
     endTime: {
         type: DataTypes.DATE,
-        allowNull: true  // Changed to true - null when delivery starts, set when completed
+        allowNull: true  // null when delivery starts, set when completed
     },
     estimatedTime: {
         type: DataTypes.INTEGER, // in minutes
@@ -48,11 +53,12 @@ const deliveryHistoryModel = sequelize.define('DeliveryHistory', {
     },
     actualTime: {
         type: DataTypes.INTEGER, // in minutes
-        allowNull: false
+        allowNull: false,
+        defaultValue: 0  // Added default value for when delivery is assigned but not completed
     },
     paymentMethod: {
         type: DataTypes.ENUM('cash', 'debt', 'partial'),
-        allowNull: true  // Changed to true - null when delivery starts, set when completed
+        allowNull: true  // null when delivery starts, set when completed
     },
     totalAmount: {
         type: DataTypes.FLOAT,
@@ -60,7 +66,8 @@ const deliveryHistoryModel = sequelize.define('DeliveryHistory', {
     },
     amountPaid: {
         type: DataTypes.FLOAT,
-        allowNull: false
+        allowNull: false,
+        defaultValue: 0  // Added default value
     },
     debtAmount: {
         type: DataTypes.FLOAT,
@@ -78,6 +85,12 @@ const deliveryHistoryModel = sequelize.define('DeliveryHistory', {
     customerLongitude: {
         type: DataTypes.DECIMAL(11, 8),
         allowNull: true
+    },
+    status: {
+        type: DataTypes.ENUM('assigned', 'in_progress', 'completed'),
+        defaultValue: 'assigned',
+        allowNull: false,
+        comment: 'Track the status of delivery: assigned -> in_progress -> completed'
     }
 }, {
     tableName: 'delivery_history',
@@ -98,6 +111,22 @@ deliveryHistoryModel.belongsTo(customerOrderModel, {
 deliveryHistoryModel.belongsTo(customerModel, {
     foreignKey: 'customerId',
     as: 'customer'
+});
+
+// Reverse associations for easier querying
+deliveryEmployeeModel.hasMany(deliveryHistoryModel, {
+    foreignKey: 'deliveryEmployeeId',
+    as: 'deliveryHistory'
+});
+
+customerOrderModel.hasMany(deliveryHistoryModel, {
+    foreignKey: 'orderId',
+    as: 'deliveryHistory'
+});
+
+customerModel.hasMany(deliveryHistoryModel, {
+    foreignKey: 'customerId',
+    as: 'deliveryHistory'
 });
 
 export default deliveryHistoryModel;

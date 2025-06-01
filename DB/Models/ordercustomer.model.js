@@ -19,11 +19,10 @@ const customerOrderModel = sequelize.define('Customerorder', {
         }
     },
     status: {
-        type: DataTypes.ENUM('Pending', 'Accepted', 'Rejected', 'Preparing', 'Prepared', 'on_theway', 'Shipped'),
+        type: DataTypes.ENUM('Pending', 'Accepted', 'Rejected', 'Preparing', 'Prepared', 'Assigned', 'on_theway', 'Shipped'),
         defaultValue: 'Pending',
         allowNull: false
     },
-    // In customerOrder.model.js
     paymentMethod: {
         type: DataTypes.ENUM('cash', 'debt', 'partial', null),
         allowNull: true,  // Allow null for initial order creation
@@ -69,6 +68,11 @@ const customerOrderModel = sequelize.define('Customerorder', {
         type: DataTypes.DATE,
         allowNull: true
     },
+    assignedAt: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        comment: 'Timestamp when order was assigned to delivery employee'
+    },
     deliveryDelayReason: {
         type: DataTypes.STRING(500),
         allowNull: true
@@ -94,9 +98,16 @@ customerModel.hasMany(customerOrderModel, {
     as: 'orders'
 });
 
+// Delivery employee associations - updated for multi-order support
 customerOrderModel.belongsTo(deliveryEmployeeModel, {
     foreignKey: 'deliveryEmployeeId',
     as: 'deliveryEmployee'
+});
+
+// Allow delivery employee to have multiple assigned orders
+deliveryEmployeeModel.hasMany(customerOrderModel, {
+    foreignKey: 'deliveryEmployeeId',
+    as: 'assignedOrders'
 });
 
 export default customerOrderModel;
