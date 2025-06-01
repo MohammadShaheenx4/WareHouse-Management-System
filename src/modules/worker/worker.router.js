@@ -44,6 +44,6 @@ router.put("/supplier-orders/:id", Auth.isAuthenticated, receiveSupplierOrder);
 router.get("/orders-history", Auth.isAuthenticated, getOrdersHistory);
 
 // Admin-only routes - for viewing detailed logs
-router.get("/order-logs/:id", Auth.isAuthenticated, isAdmin, getOrderActivityLogs);
+router.get("/order-logs/:id", Auth.isAuthenticated, getOrderActivityLogs);
 
 export default router;

@@ -8,6 +8,8 @@ import { DataTypes } from 'sequelize';
 import supplierModel from '../../../DB/Models/supplier.model.js'; // Import the supplier model
 import customerModel from '../../../DB/Models/customer.model.js'; // Import the supplier model
 import warehouseEmployeeModel from '../../../DB/Models/WareHouseEmployee.model.js';
+import deliveryEmployeeModel from '../../../DB/Models/deliveryEmployee.model.js';
+
 import cloudinary from "../../utils/cloudinary.js";
 
 
@@ -67,6 +69,11 @@ export const register = async (req, res, next) => {
             });
         }
 
+        if (roleName === 'DeliveryEmployee') {
+            await deliveryEmployeeModel.create({
+                userId: newUser.userId   // Link warehouse employee to the new user via userId
+            });
+        }
         // Send the generated password to the user's email
         await sendEmail({
             userEmail: newUser.email,

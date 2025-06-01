@@ -745,12 +745,13 @@ export const getOrderActivityLogs = async (req, res) => {
         }
 
         // Check if user is an admin
-        if (req.user.role !== 'Admin') {
-            return res.status(403).json({ message: 'Access denied. Only admins can view detailed order logs' });
-        }
+        // if (req.user.role !== 'Admin') {
+        //     return res.status(403).json({ message: 'Access denied. Only admins can view detailed order logs' });
+        // }
 
         const orderId = req.params.id;
         const orderType = req.query.type; // 'customer' or 'supplier'
+        console.log(orderType);
 
         if (!orderType || (orderType !== 'customer' && orderType !== 'supplier')) {
             return res.status(400).json({ message: 'Order type must be specified as "customer" or "supplier"' });

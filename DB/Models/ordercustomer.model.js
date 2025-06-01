@@ -1,6 +1,7 @@
 import { DataTypes } from 'sequelize';
 import sequelize from '../Connection.js';
 import customerModel from './customer.model.js';
+import deliveryEmployeeModel from './deliveryEmployee.model.js';
 import userModel from './user.model.js';
 
 const customerOrderModel = sequelize.define('Customerorder', {
@@ -47,6 +48,34 @@ const customerOrderModel = sequelize.define('Customerorder', {
         type: DataTypes.TEXT,
         allowNull: true,
         defaultValue: null
+    },
+    deliveryEmployeeId: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        references: {
+            model: 'delivery_employees',
+            key: 'id'
+        }
+    },
+    estimatedDeliveryTime: {
+        type: DataTypes.INTEGER, // in minutes
+        allowNull: true
+    },
+    deliveryStartTime: {
+        type: DataTypes.DATE,
+        allowNull: true
+    },
+    deliveryEndTime: {
+        type: DataTypes.DATE,
+        allowNull: true
+    },
+    deliveryDelayReason: {
+        type: DataTypes.STRING(500),
+        allowNull: true
+    },
+    deliveryNotes: {
+        type: DataTypes.TEXT,
+        allowNull: true
     }
 }, {
     tableName: 'customerorders',
@@ -63,6 +92,11 @@ customerOrderModel.belongsTo(customerModel, {
 customerModel.hasMany(customerOrderModel, {
     foreignKey: 'customerId',
     as: 'orders'
+});
+
+customerOrderModel.belongsTo(deliveryEmployeeModel, {
+    foreignKey: 'deliveryEmployeeId',
+    as: 'deliveryEmployee'
 });
 
 export default customerOrderModel;
