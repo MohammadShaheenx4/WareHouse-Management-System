@@ -184,6 +184,7 @@ export const completeDeliverySchema = Joi.object({
             'string.base': 'Delivery notes must be a string',
             'string.max': 'Delivery notes cannot exceed 500 characters'
         })
+    // Note: No validation for signatureConfiremed since it's handled by file upload
 }).custom((value, helpers) => {
     const { paymentMethod, totalAmount, amountPaid } = value;
 

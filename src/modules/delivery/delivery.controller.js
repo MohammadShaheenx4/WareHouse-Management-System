@@ -6,6 +6,8 @@ import customerOrderItemModel from "../../../DB/Models/customerOrderItem.model.j
 import customerModel from "../../../DB/Models/customer.model.js";
 import productModel from "../../../DB/Models/product.model.js";
 import userModel from "../../../DB/Models/user.model.js";
+import cloudinary from "../../utils/cloudinary.js";
+
 import { Op } from "sequelize";
 import {
     assignOrdersSchema,
@@ -787,6 +789,22 @@ export const completeDelivery = async (req, res) => {
 
         const debtAmount = totalAmount - amountPaid;
 
+        // Handle signature upload to Cloudinary
+        let signatureUrl = null;
+        if (req.file) {
+            try {
+                const { secure_url } = await cloudinary.uploader.upload(req.file.path, {
+                    folder: 'warehouse/signatures',  // Different folder for signatures
+                    resource_type: 'image'
+                });
+                signatureUrl = secure_url;
+            } catch (cloudinaryError) {
+                console.error('Error uploading signature to cloudinary:', cloudinaryError);
+                await transaction.rollback();
+                return res.status(500).json({ message: 'Error uploading signature. Please try again.' });
+            }
+        }
+
         // Update customer account balance if needed
         if (paymentMethod === 'debt' || (paymentMethod === 'partial' && debtAmount > 0)) {
             const newBalance = parseFloat(order.customer.accountBalance) + debtAmount;
@@ -795,13 +813,14 @@ export const completeDelivery = async (req, res) => {
             }, { transaction });
         }
 
-        // Update order
+        // Update order (include signature URL)
         await order.update({
             status: 'Shipped',
             paymentMethod: paymentMethod,
             amountPaid: amountPaid,
             deliveryEndTime: new Date(),
-            deliveryNotes: deliveryNotes
+            deliveryNotes: deliveryNotes,
+            signatureConfiremed: signatureUrl  // Store Cloudinary URL
         }, { transaction });
 
         // Update delivery history
@@ -828,7 +847,7 @@ export const completeDelivery = async (req, res) => {
             }, { transaction });
         }
 
-        // SUBTRACT product quantities ONLY for successful deliveries
+        // Update product quantities (ONLY for successful deliveries)
         const orderItems = await customerOrderItemModel.findAll({
             where: { orderId: orderId },
             include: [{
@@ -855,6 +874,8 @@ export const completeDelivery = async (req, res) => {
                 totalAmount: totalAmount,
                 amountPaid: amountPaid,
                 debtAmount: debtAmount,
+                signatureConfiremed: signatureUrl,  // Return signature URL
+                hasSignature: !!signatureUrl,       // Boolean indicator
                 customerNewBalance: paymentMethod !== 'cash' ?
                     order.customer.accountBalance + debtAmount :
                     order.customer.accountBalance,

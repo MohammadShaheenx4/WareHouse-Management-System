@@ -2,6 +2,8 @@ import { Router } from 'express';
 import * as deliveryController from './delivery.controller.js';
 import Auth from "../../middleware/authMiddleware.js";
 
+import fileUpload, { fileValidation } from '../../utils/multer.js';
+
 const router = Router();
 
 // =================== ADMIN ROUTES ===================
@@ -37,7 +39,11 @@ router.put('/location', Auth.isAuthenticated, deliveryController.updateLocation)
 router.put('/estimated-time', Auth.isAuthenticated, deliveryController.updateEstimatedTime);
 
 // Complete delivery
-router.post('/complete-delivery', Auth.isAuthenticated, deliveryController.completeDelivery);
+router.post('/complete-delivery',
+    Auth.isAuthenticated,
+    fileUpload(fileValidation.image).single('signatureImage'),  // Add file upload middleware
+    deliveryController.completeDelivery
+);
 
 // Return an order (NEW - when customer unavailable/sick/refuses delivery)
 router.post('/return-order', Auth.isAuthenticated, deliveryController.returnOrder);

@@ -68,6 +68,12 @@ const customerOrderModel = sequelize.define('Customerorder', {
         type: DataTypes.DATE,
         allowNull: true
     },
+    signatureConfiremed: {
+        type: DataTypes.STRING(500),  // Changed from BOOLEAN to STRING
+        allowNull: true,              // Changed to allow null
+        defaultValue: null,           // Changed default to null
+        comment: 'Cloudinary URL of customer signature image for delivery confirmation'
+    },
     assignedAt: {
         type: DataTypes.DATE,
         allowNull: true,
