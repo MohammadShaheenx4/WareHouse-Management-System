@@ -13,6 +13,7 @@ import {
     updateLocationSchema,
     updateEstimatedTimeSchema,
     completeDeliverySchema,
+    returnOrderSchema,
     validateOrderId,
     paginationSchema
 } from "./delivery.validation.js";
@@ -22,9 +23,6 @@ import {
 // Get overall delivery statistics (Admin only)
 export const getDeliveryStats = async (req, res) => {
     try {
-        // Check if user is admin (implement according to your auth system)
-        // You may need to adjust this based on how your Auth.isAuthenticated handles roles
-
         const todayStart = new Date();
         todayStart.setHours(0, 0, 0, 0);
 
@@ -78,6 +76,14 @@ export const getDeliveryStats = async (req, res) => {
             }
         });
 
+        // Today's returns
+        const todayReturns = await customerOrderModel.count({
+            where: {
+                status: 'Returned',
+                deliveryEndTime: { [Op.gte]: todayStart }
+            }
+        });
+
         return res.status(200).json({
             totalStats: {
                 totalDeliveries: parseInt(totalStats.totalDeliveries) || 0,
@@ -86,7 +92,8 @@ export const getDeliveryStats = async (req, res) => {
             },
             todayStats: {
                 deliveries: parseInt(todayStats.todayDeliveries) || 0,
-                revenue: parseFloat(todayStats.todayRevenue) || 0
+                revenue: parseFloat(todayStats.todayRevenue) || 0,
+                returns: todayReturns
             },
             currentStatus: {
                 activeOrders: activeOrdersCount,
@@ -103,11 +110,6 @@ export const getDeliveryStats = async (req, res) => {
 // Get all prepared orders ready for assignment (Admin only)
 export const getUnassignedOrders = async (req, res) => {
     try {
-        // Check if user is admin (you'll need to implement admin check based on your auth system)
-        // if (req.user.role !== 'admin') {
-        //     return res.status(403).json({ message: 'Access denied. Admin access required' });
-        // }
-
         // Get orders with status 'Prepared' and not assigned to any delivery employee
         const unassignedOrders = await customerOrderModel.findAll({
             where: {
@@ -151,10 +153,6 @@ export const getUnassignedOrders = async (req, res) => {
 // Get all delivery employees with their current workload (Admin only)
 export const getDeliveryEmployeesWorkload = async (req, res) => {
     try {
-        // if (req.user.role !== 'admin') {
-        //     return res.status(403).json({ message: 'Access denied. Admin access required' });
-        // }
-
         const deliveryEmployees = await deliveryEmployeeModel.findAll({
             include: [
                 {
@@ -208,10 +206,6 @@ export const assignOrdersToDelivery = async (req, res) => {
     const transaction = await sequelize.transaction();
 
     try {
-        // if (req.user.role !== 'Admin') {
-        //     return res.status(403).json({ message: 'Access denied. Admin access required' });
-        // }
-
         // Validate request body
         const { error } = assignOrdersSchema.validate(req.body);
         if (error) {
@@ -355,12 +349,12 @@ export const getAssignedOrders = async (req, res) => {
     }
 };
 
-// Start delivery for a specific assigned order
+// Start delivery for a specific assigned order (ENHANCED with location tracking)
 export const startDelivery = async (req, res) => {
     const transaction = await sequelize.transaction();
 
     try {
-        const { orderId, orderIds, routeNotes } = req.body;
+        const { orderId, orderIds, routeNotes, latitude, longitude } = req.body;
 
         // Determine if single or multiple orders
         let targetOrderIds = [];
@@ -407,6 +401,19 @@ export const startDelivery = async (req, res) => {
 
         const startTime = new Date();
 
+        // Determine employee location (from request or current stored location)
+        let employeeLatitude = latitude || deliveryEmployee.currentLatitude;
+        let employeeLongitude = longitude || deliveryEmployee.currentLongitude;
+
+        // If location provided in request, update employee's current location
+        if (latitude && longitude) {
+            await deliveryEmployee.update({
+                currentLatitude: latitude,
+                currentLongitude: longitude,
+                lastLocationUpdate: startTime
+            }, { transaction });
+        }
+
         // Update all orders to 'on_theway' status
         await customerOrderModel.update({
             status: 'on_theway',
@@ -417,10 +424,13 @@ export const startDelivery = async (req, res) => {
             transaction
         });
 
-        // Update delivery history for all orders
+        // Update delivery history for all orders with employee's location
         await deliveryHistoryModel.update({
             startTime: startTime,
-            status: 'in_progress'
+            status: 'in_progress',
+            // Store delivery employee's starting location
+            employeeStartLatitude: employeeLatitude,
+            employeeStartLongitude: employeeLongitude
         }, {
             where: {
                 orderId: { [Op.in]: targetOrderIds },
@@ -443,6 +453,11 @@ export const startDelivery = async (req, res) => {
                         latitude: orders[0].customer.latitude,
                         longitude: orders[0].customer.longitude
                     }
+                },
+                employeeStartLocation: {
+                    latitude: employeeLatitude,
+                    longitude: employeeLongitude,
+                    timestamp: startTime
                 }
             });
         } else {
@@ -457,7 +472,12 @@ export const startDelivery = async (req, res) => {
                     }
                 })),
                 startTime: startTime,
-                routeNotes: routeNotes || null
+                routeNotes: routeNotes || null,
+                employeeStartLocation: {
+                    latitude: employeeLatitude,
+                    longitude: employeeLongitude,
+                    timestamp: startTime
+                }
             });
         }
 
@@ -468,7 +488,156 @@ export const startDelivery = async (req, res) => {
     }
 };
 
-// Update delivery employee location (same as before)
+// Return order (NEW - when customer unavailable/sick/refuses delivery)
+export const returnOrder = async (req, res) => {
+    const transaction = await sequelize.transaction();
+
+    try {
+        const { error } = returnOrderSchema.validate(req.body);
+        if (error) {
+            await transaction.rollback();
+            return res.status(400).json({ message: error.details[0].message });
+        }
+
+        const { orderId, returnReason, returnNotes } = req.body;
+
+        const deliveryEmployee = await deliveryEmployeeModel.findOne({
+            where: { userId: req.user.userId }
+        });
+
+        if (!deliveryEmployee) {
+            await transaction.rollback();
+            return res.status(403).json({ message: 'Access denied. User is not a delivery employee' });
+        }
+
+        const order = await customerOrderModel.findOne({
+            where: {
+                id: orderId,
+                deliveryEmployeeId: deliveryEmployee.id,
+                status: 'on_theway'
+            },
+            include: [{
+                model: customerModel,
+                as: 'customer'
+            }]
+        });
+
+        if (!order) {
+            await transaction.rollback();
+            return res.status(404).json({
+                message: 'Order not found, not assigned to you, or not in progress'
+            });
+        }
+
+        // Update order status to 'Returned'
+        await order.update({
+            status: 'Returned',
+            deliveryEndTime: new Date(),
+            deliveryNotes: returnNotes,
+            returnReason: returnReason
+        }, { transaction });
+
+        // Update delivery history
+        const deliveryHistory = await deliveryHistoryModel.findOne({
+            where: {
+                orderId: orderId,
+                deliveryEmployeeId: deliveryEmployee.id,
+                endTime: null
+            }
+        });
+
+        if (deliveryHistory) {
+            const endTime = new Date();
+            const actualTime = Math.round((endTime - deliveryHistory.startTime) / 60000);
+
+            await deliveryHistory.update({
+                endTime: endTime,
+                actualTime: actualTime,
+                deliveryNotes: returnNotes,
+                status: 'returned',
+                returnReason: returnReason
+            }, { transaction });
+        }
+
+        // IMPORTANT: Do NOT subtract quantities - products are returned to inventory
+        // No quantity changes needed since products weren't delivered
+
+        await transaction.commit();
+
+        return res.status(200).json({
+            message: 'Order marked as returned successfully',
+            summary: {
+                orderId: orderId,
+                status: 'Returned',
+                returnReason: returnReason,
+                returnTime: new Date(),
+                note: 'Product quantities remain unchanged - items returned to inventory'
+            }
+        });
+    } catch (error) {
+        await transaction.rollback();
+        console.error('Error returning order:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// Get delivery actions for current active deliveries (NEW)
+export const getDeliveryActions = async (req, res) => {
+    try {
+        const deliveryEmployee = await deliveryEmployeeModel.findOne({
+            where: { userId: req.user.userId }
+        });
+
+        if (!deliveryEmployee) {
+            return res.status(403).json({ message: 'Access denied. User is not a delivery employee' });
+        }
+
+        const activeOrders = await customerOrderModel.findAll({
+            where: {
+                deliveryEmployeeId: deliveryEmployee.id,
+                status: 'on_theway'
+            },
+            include: [
+                {
+                    model: customerModel,
+                    as: 'customer',
+                    attributes: ['id', 'address', 'latitude', 'longitude'],
+                    include: [{
+                        model: userModel,
+                        as: 'user',
+                        attributes: ['name', 'phoneNumber']
+                    }]
+                },
+                {
+                    model: customerOrderItemModel,
+                    as: 'items',
+                    include: [{
+                        model: productModel,
+                        as: 'product',
+                        attributes: ['productId', 'name', 'quantity']
+                    }]
+                }
+            ],
+            order: [['deliveryStartTime', 'ASC']]
+        });
+
+        return res.status(200).json({
+            inProgressOrders: activeOrders.map(order => ({
+                ...order.get({ plain: true }),
+                availableActions: [
+                    'complete_delivery',    // Mark as successfully delivered
+                    'return_order',         // Mark as returned (customer unavailable/sick)
+                    'update_estimated_time' // Update delivery time if delayed
+                ]
+            }))
+        });
+    } catch (error) {
+        console.error('Error getting delivery actions:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// Update delivery employee location
 export const updateLocation = async (req, res) => {
     try {
         const { error } = updateLocationSchema.validate(req.body);
@@ -506,7 +675,7 @@ export const updateLocation = async (req, res) => {
     }
 };
 
-// Update estimated delivery time (modified for specific order)
+// Update estimated delivery time
 export const updateEstimatedTime = async (req, res) => {
     const transaction = await sequelize.transaction();
 
@@ -575,7 +744,7 @@ export const updateEstimatedTime = async (req, res) => {
     }
 };
 
-// Complete delivery (modified to handle multiple orders)
+// Complete delivery (ENHANCED - handles inventory correctly)
 export const completeDelivery = async (req, res) => {
     const transaction = await sequelize.transaction();
 
@@ -659,7 +828,7 @@ export const completeDelivery = async (req, res) => {
             }, { transaction });
         }
 
-        // Update product quantities
+        // SUBTRACT product quantities ONLY for successful deliveries
         const orderItems = await customerOrderItemModel.findAll({
             where: { orderId: orderId },
             include: [{
@@ -681,13 +850,15 @@ export const completeDelivery = async (req, res) => {
             message: 'Delivery completed successfully',
             summary: {
                 orderId: orderId,
+                status: 'Shipped',
                 paymentMethod: paymentMethod,
                 totalAmount: totalAmount,
                 amountPaid: amountPaid,
                 debtAmount: debtAmount,
                 customerNewBalance: paymentMethod !== 'cash' ?
                     order.customer.accountBalance + debtAmount :
-                    order.customer.accountBalance
+                    order.customer.accountBalance,
+                note: 'Product quantities have been deducted from inventory'
             }
         });
     } catch (error) {
@@ -697,7 +868,7 @@ export const completeDelivery = async (req, res) => {
     }
 };
 
-// Get all current deliveries (modified to return multiple)
+// Get all current deliveries
 export const getCurrentDeliveries = async (req, res) => {
     try {
         const deliveryEmployee = await deliveryEmployeeModel.findOne({
@@ -771,7 +942,7 @@ export const getCurrentDeliveries = async (req, res) => {
     }
 };
 
-// Get delivery history (same as before)
+// Get delivery history
 export const getDeliveryHistory = async (req, res) => {
     try {
         const deliveryEmployee = await deliveryEmployeeModel.findOne({
@@ -862,7 +1033,7 @@ export const getDeliveryHistory = async (req, res) => {
     }
 };
 
-// Get delivery employee profile (same as before)
+// Get delivery employee profile
 export const getProfile = async (req, res) => {
     try {
         const deliveryEmployee = await deliveryEmployeeModel.findOne({
@@ -927,9 +1098,12 @@ export const getProfile = async (req, res) => {
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
+
+// =================== LEGACY FUNCTIONS (for backward compatibility) ===================
+
+// Get prepared orders (LEGACY)
 export const getPreparedOrders = async (req, res) => {
     try {
-        // Check if user is a delivery employee
         const deliveryEmployee = await deliveryEmployeeModel.findOne({
             where: { userId: req.user.userId }
         });
@@ -938,11 +1112,10 @@ export const getPreparedOrders = async (req, res) => {
             return res.status(403).json({ message: 'Access denied. User is not a delivery employee' });
         }
 
-        // Get orders with status 'Prepared' (unassigned orders)
         const preparedOrders = await customerOrderModel.findAll({
             where: {
                 status: 'Prepared',
-                deliveryEmployeeId: null  // Only unassigned orders
+                deliveryEmployeeId: null
             },
             include: [
                 {
@@ -965,7 +1138,7 @@ export const getPreparedOrders = async (req, res) => {
                     }]
                 }
             ],
-            order: [['createdAt', 'ASC']] // Oldest first
+            order: [['createdAt', 'ASC']]
         });
 
         return res.status(200).json({
@@ -978,7 +1151,7 @@ export const getPreparedOrders = async (req, res) => {
     }
 };
 
-// Get current delivery (LEGACY - for backward compatibility)
+// Get current delivery (LEGACY)
 export const getCurrentDelivery = async (req, res) => {
     try {
         const deliveryEmployee = await deliveryEmployeeModel.findOne({
@@ -989,7 +1162,6 @@ export const getCurrentDelivery = async (req, res) => {
             return res.status(403).json({ message: 'Access denied. User is not a delivery employee' });
         }
 
-        // Get the first active delivery (for backward compatibility)
         const currentOrder = await customerOrderModel.findOne({
             where: {
                 deliveryEmployeeId: deliveryEmployee.id,
@@ -1016,7 +1188,7 @@ export const getCurrentDelivery = async (req, res) => {
                     }]
                 }
             ],
-            order: [['assignedAt', 'ASC']] // Get the oldest assigned order first
+            order: [['assignedAt', 'ASC']]
         });
 
         if (!currentOrder) {
@@ -1026,7 +1198,6 @@ export const getCurrentDelivery = async (req, res) => {
             });
         }
 
-        // Get delivery history record
         const deliveryHistory = await deliveryHistoryModel.findOne({
             where: {
                 orderId: currentOrder.id,
@@ -1053,6 +1224,8 @@ export const getCurrentDelivery = async (req, res) => {
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
+
+// Get all delivery employees
 export const getAllDeliveryEmployees = async (req, res) => {
     try {
         const deliveryEmployees = await deliveryEmployeeModel.findAll({
@@ -1066,7 +1239,6 @@ export const getAllDeliveryEmployees = async (req, res) => {
             attributes: [
                 'id',
                 'userId',
-
                 'isAvailable',
                 'currentLatitude',
                 'currentLongitude',

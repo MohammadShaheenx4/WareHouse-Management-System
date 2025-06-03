@@ -42,7 +42,7 @@ export const startDeliverySchema = Joi.object({
             'number.positive': 'Order ID must be positive'
         }),
 
-    // Multiple orders (new functionality)
+    // Multiple orders (multi-order functionality)
     orderIds: Joi.array().items(
         Joi.number().integer().positive()
     ).min(1).max(5)
@@ -56,12 +56,58 @@ export const startDeliverySchema = Joi.object({
     routeNotes: Joi.string().max(300).optional()
         .messages({
             'string.max': 'Route notes cannot exceed 300 characters'
-        })
-}).xor('orderId', 'orderIds')  // Must have either orderId OR orderIds, not both
-    .messages({
-        'object.xor': 'Either orderId (single order) or orderIds (multiple orders) is required, but not both'
-    });
+        }),
 
+    // Optional location (NEW)
+    latitude: Joi.number().min(-90).max(90).optional()
+        .messages({
+            'number.base': 'Latitude must be a number',
+            'number.min': 'Latitude must be between -90 and 90',
+            'number.max': 'Latitude must be between -90 and 90'
+        }),
+
+    longitude: Joi.number().min(-180).max(180).optional()
+        .messages({
+            'number.base': 'Longitude must be a number',
+            'number.min': 'Longitude must be between -180 and 180',
+            'number.max': 'Longitude must be between -180 and 180'
+        })
+
+}).xor('orderId', 'orderIds')  // Must have either orderId OR orderIds, not both
+    .and('latitude', 'longitude')  // If latitude provided, longitude must also be provided
+    .messages({
+        'object.xor': 'Either orderId (single order) or orderIds (multiple orders) is required, but not both',
+        'object.and': 'If latitude is provided, longitude must also be provided'
+    });
+export const returnOrderSchema = Joi.object({
+    orderId: Joi.number().integer().positive().required()
+        .messages({
+            'number.base': 'Order ID must be a number',
+            'number.integer': 'Order ID must be an integer',
+            'number.positive': 'Order ID must be positive',
+            'any.required': 'Order ID is required'
+        }),
+    returnReason: Joi.string().valid(
+        'customer_unavailable',
+        'customer_sick',
+        'customer_refused',
+        'wrong_address',
+        'payment_issue',
+        'other'
+    ).required()
+        .messages({
+            'string.base': 'Return reason must be a string',
+            'any.only': 'Return reason must be one of: customer_unavailable, customer_sick, customer_refused, wrong_address, payment_issue, other',
+            'any.required': 'Return reason is required'
+        }),
+    returnNotes: Joi.string().min(5).max(300).required()
+        .messages({
+            'string.base': 'Return notes must be a string',
+            'string.min': 'Return notes must be at least 5 characters long',
+            'string.max': 'Return notes cannot exceed 300 characters',
+            'any.required': 'Return notes explaining the situation are required'
+        })
+});
 // Validation for updating location
 export const updateLocationSchema = Joi.object({
     latitude: Joi.number().min(-90).max(90).required()
