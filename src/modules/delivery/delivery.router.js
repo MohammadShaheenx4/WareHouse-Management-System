@@ -41,7 +41,7 @@ router.put('/estimated-time', Auth.isAuthenticated, deliveryController.updateEst
 // Complete delivery
 router.post('/complete-delivery',
     Auth.isAuthenticated,
-    fileUpload(fileValidation.image).single('signatureImage'),  // Add file upload middleware
+    fileUpload(fileValidation.image).any(), // This accepts any fields including files
     deliveryController.completeDelivery
 );
 

@@ -751,13 +751,40 @@ export const completeDelivery = async (req, res) => {
     const transaction = await sequelize.transaction();
 
     try {
-        const { error } = completeDeliverySchema.validate(req.body);
+        // Handle both FormData and JSON requests
+        let orderData;
+        let signatureFile = null;
+
+        const contentType = req.headers['content-type'];
+
+        if (contentType && contentType.includes('multipart/form-data')) {
+            // FormData request (with potential signature)
+            orderData = {
+                orderId: parseInt(req.body.orderId),
+                paymentMethod: req.body.paymentMethod,
+                totalAmount: parseFloat(req.body.totalAmount),
+                amountPaid: parseFloat(req.body.amountPaid),
+                deliveryNotes: req.body.deliveryNotes || ''
+            };
+
+            // Check for signature file (using .any() multer configuration)
+            if (req.files && req.files.length > 0) {
+                signatureFile = req.files.find(file => file.fieldname === 'signatureImage');
+            }
+        } else {
+            // JSON request (without signature)
+            orderData = req.body;
+            signatureFile = null;
+        }
+
+        // Validate order data
+        const { error } = completeDeliverySchema.validate(orderData);
         if (error) {
             await transaction.rollback();
             return res.status(400).json({ message: error.details[0].message });
         }
 
-        const { orderId, paymentMethod, totalAmount, amountPaid, deliveryNotes } = req.body;
+        const { orderId, paymentMethod, totalAmount, amountPaid, deliveryNotes } = orderData;
 
         const deliveryEmployee = await deliveryEmployeeModel.findOne({
             where: { userId: req.user.userId }
@@ -789,12 +816,12 @@ export const completeDelivery = async (req, res) => {
 
         const debtAmount = totalAmount - amountPaid;
 
-        // Handle signature upload to Cloudinary
+        // Handle signature upload to Cloudinary (only if file exists)
         let signatureUrl = null;
-        if (req.file) {
+        if (signatureFile) {
             try {
-                const { secure_url } = await cloudinary.uploader.upload(req.file.path, {
-                    folder: 'warehouse/signatures',  // Different folder for signatures
+                const { secure_url } = await cloudinary.uploader.upload(signatureFile.path, {
+                    folder: 'warehouse/signatures',
                     resource_type: 'image'
                 });
                 signatureUrl = secure_url;
