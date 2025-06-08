@@ -11,7 +11,7 @@ import customerOrderRouter from './modules/customerOrder/customerOrder.router.js
 import customerRouter from './modules/customer/customer.router.js'
 import workerRouter from './modules/worker/worker.router.js'
 import deliveryRouter from './modules/delivery/delivery.router.js'
-
+import lowstockRouter from './modules/lowstock/lowStock.router.js'
 
 
 
@@ -50,6 +50,8 @@ const initApp = async (app, express) => {
     app.use('/customer-details', customerRouter);
     app.use('/worker', workerRouter);
     app.use('/delivery', deliveryRouter);
+    app.use('/low-stock', lowstockRouter);
+
 
 
 

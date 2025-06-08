@@ -122,10 +122,28 @@ export const updateCustomerProfile = async (req, res) => {
             userUpdateData.password = hashedPassword;
         }
 
-        // Process profile picture update if file uploaded - simplified approach like updateUser
+        // Handle file upload - Updated for .any() configuration
+        let profilePictureFile = null;
+
+        // Check for file in different ways based on multer configuration
         if (req.file) {
+            // If using .single('profilePicture')
+            profilePictureFile = req.file;
+        } else if (req.files) {
+            // If using .any() or .fields()
+            if (Array.isArray(req.files)) {
+                // .any() returns array
+                profilePictureFile = req.files.find(file => file.fieldname === 'profilePicture');
+            } else if (req.files.profilePicture) {
+                // .fields() returns object
+                profilePictureFile = req.files.profilePicture[0];
+            }
+        }
+
+        // Process profile picture update if file uploaded
+        if (profilePictureFile) {
             try {
-                const { secure_url } = await cloudinary.uploader.upload(req.file.path, {
+                const { secure_url } = await cloudinary.uploader.upload(profilePictureFile.path, {
                     folder: 'warehouse/profiles'
                 });
                 userUpdateData.profilePicture = secure_url;
@@ -156,7 +174,7 @@ export const updateCustomerProfile = async (req, res) => {
         // If no updates were made, inform the user
         if (Object.keys(userUpdateData).length === 0 &&
             Object.keys(customerUpdateData).length === 0 &&
-            !req.file) {
+            !profilePictureFile) {
             await transaction.rollback();
             return res.status(400).json({ message: 'No updates provided' });
         }
@@ -177,7 +195,7 @@ export const updateCustomerProfile = async (req, res) => {
         // Prepare response message
         let successMessage = 'Profile updated successfully';
         if (currentPassword && newPassword) successMessage += ' with password change';
-        if (req.file) successMessage += ' with new profile picture';
+        if (profilePictureFile) successMessage += ' with new profile picture';
 
         return res.status(200).json({
             message: successMessage,

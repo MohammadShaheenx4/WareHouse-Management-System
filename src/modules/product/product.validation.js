@@ -14,6 +14,7 @@ export const createProductSchema = Joi.object({
             'number.positive': 'Cost price must be positive',
             'any.required': 'Cost price is required'
         }),
+    lowStock: Joi.number().integer().min(0).optional().default(10),
     sellPrice: Joi.number().positive().required()
         .messages({
             'number.base': 'Sell price must be a number',
@@ -106,6 +107,7 @@ export const updateProductSchema = Joi.object({
             'number.base': 'Cost price must be a number',
             'number.positive': 'Cost price must be positive'
         }),
+    lowStock: Joi.number().integer().min(0).optional(),
     sellPrice: Joi.number().positive()
         .messages({
             'number.base': 'Sell price must be a number',

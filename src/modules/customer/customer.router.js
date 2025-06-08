@@ -12,7 +12,7 @@ router.get("/profile", Auth.isAuthenticated, controller.getCustomerProfile);
 
 router.put("/profile",
     Auth.isAuthenticated,
-    fileUpload(fileValidation.image).single('profilePicture'),
+    fileUpload(fileValidation.image).single('profilePicture'),  // ✅ Fixed
     controller.updateCustomerProfile);
 
 export default router;

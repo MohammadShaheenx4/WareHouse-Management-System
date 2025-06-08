@@ -43,6 +43,14 @@ const productModel = sequelize.define('Product', {
         allowNull: true,
         defaultValue: null,
     },
+    lowStock: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 10, // Default low stock threshold
+        validate: {
+            min: 0
+        }
+    },
     warranty: {
         type: DataTypes.STRING(255),
         allowNull: true,

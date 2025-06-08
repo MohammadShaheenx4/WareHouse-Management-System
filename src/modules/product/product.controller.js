@@ -16,7 +16,6 @@ import cors from 'cors'
 export const createProduct = async (req, res) => {
     try {
         // Validate request body
-
         const { error } = createProductSchema.validate(req.body);
         if (error) {
             return res.status(400).json({ message: error.details[0].message });
@@ -34,10 +33,8 @@ export const createProduct = async (req, res) => {
             name, costPrice, sellPrice, quantity,
             categoryId, categoryName, status = 'Active', barcode,
             warranty, prodDate, expDate, description,
-            supplierIds, supplierNames
+            supplierIds, supplierNames, lowStock = 10 // Add lowStock with default value
         } = req.body;
-
-
 
         // Check for duplicate barcode if provided
         if (barcode) {
@@ -51,6 +48,7 @@ export const createProduct = async (req, res) => {
                 });
             }
         }
+
         // Convert supplierNames to array if it's not
         if (supplierNames && !Array.isArray(supplierNames)) {
             supplierNames = [supplierNames];
@@ -174,6 +172,7 @@ export const createProduct = async (req, res) => {
             costPrice,
             sellPrice,
             quantity,
+            lowStock: lowStock || 10, // Include lowStock field
             categoryId,
             status,
             barcode: barcode || null,
@@ -229,9 +228,20 @@ export const createProduct = async (req, res) => {
             ]
         });
 
+        // Check if the created product is already low stock and trigger alert
+        if (newProduct.quantity <= newProduct.lowStock) {
+            // Note: In a real application, you might want to emit this as an event
+            // or add it to a queue for processing rather than handling it synchronously
+            console.warn(`ALERT: Product "${newProduct.name}" is below low stock threshold (${newProduct.quantity}/${newProduct.lowStock})`);
+        }
+
         return res.status(201).json({
             message: 'Product created successfully',
-            product: createdProduct
+            product: createdProduct,
+            lowStockAlert: newProduct.quantity <= newProduct.lowStock ? {
+                message: `Product is below low stock threshold (${newProduct.quantity}/${newProduct.lowStock})`,
+                isLowStock: true
+            } : { isLowStock: false }
         });
     } catch (error) {
         console.error('Error creating product:', error);
@@ -506,7 +516,7 @@ export const updateProduct = async (req, res) => {
             name, costPrice, sellPrice, quantity,
             categoryId, categoryName, status, barcode,
             warranty, prodDate, expDate, description,
-            supplierIds, supplierNames
+            supplierIds, supplierNames, lowStock // Add lowStock field
         } = req.body;
 
         // Convert supplierNames to array if it's not
@@ -546,6 +556,7 @@ export const updateProduct = async (req, res) => {
             ...(costPrice !== undefined && { costPrice }),
             ...(sellPrice !== undefined && { sellPrice }),
             ...(quantity !== undefined && { quantity }),
+            ...(lowStock !== undefined && { lowStock }), // Include lowStock field
             ...(categoryId !== undefined && { categoryId }),
             ...(status !== undefined && { status }),
             ...(barcode !== undefined && { barcode }),
@@ -697,9 +708,23 @@ export const updateProduct = async (req, res) => {
             ]
         });
 
+        // Check if the updated product is now low stock and trigger alert
+        const finalQuantity = quantity !== undefined ? quantity : product.quantity;
+        const finalLowStock = lowStock !== undefined ? lowStock : product.lowStock;
+
+        let lowStockAlert = { isLowStock: false };
+        if (finalQuantity <= finalLowStock) {
+            lowStockAlert = {
+                message: `Product is below low stock threshold (${finalQuantity}/${finalLowStock})`,
+                isLowStock: true
+            };
+            console.warn(`ALERT: Product "${updatedProduct.name}" is below low stock threshold (${finalQuantity}/${finalLowStock})`);
+        }
+
         return res.status(200).json({
             message: 'Product updated successfully',
-            product: updatedProduct
+            product: updatedProduct,
+            lowStockAlert
         });
     } catch (error) {
         console.error('Error updating product:', error);
