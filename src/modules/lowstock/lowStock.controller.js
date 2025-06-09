@@ -31,16 +31,16 @@ export const getLowStockItems = async (req, res) => {
                 {
                     model: supplierModel,
                     as: 'suppliers',
-                    attributes: ['id'],
+                    attributes: ['id', 'userId'],
                     through: {
-                        attributes: ['status']
+                        attributes: ['status', 'priceSupplier'] // Include price supplier offers
                     },
                     required: false,
                     include: [
                         {
                             model: userModel,
                             as: 'user',
-                            attributes: ['name', 'isActive'],
+                            attributes: ['name', 'isActive', 'email', 'phoneNumber'],
                             required: false
                         }
                     ]
@@ -48,34 +48,104 @@ export const getLowStockItems = async (req, res) => {
             ]
         });
 
-        const simpleAnalysis = lowStockProducts.map(product => {
-            const activeSuppliers = product.suppliers?.filter(s =>
-                s.ProductSupplier?.status === 'Active' && s.user?.isActive === 'Active'
-            ).length || 0;
+        // Get last order information for each product
+        const enhancedAnalysis = await Promise.all(
+            lowStockProducts.map(async (product) => {
+                // Get all active suppliers for this product
+                const activeSuppliers = product.suppliers?.filter(s =>
+                    s.ProductSupplier?.status === 'Active' && s.user?.isActive === 'Active'
+                ) || [];
 
-            return {
-                productId: product.productId,
-                name: product.name,
-                quantity: product.quantity,
-                lowStock: product.lowStock,
-                category: product.category?.categoryName || 'No category',
-                alertLevel: product.quantity === 0 ? 'CRITICAL' :
-                    product.quantity <= Math.floor(product.lowStock * 0.5) ? 'HIGH' : 'MEDIUM',
-                hasActiveSuppliers: activeSuppliers > 0,
-                activeSupplierCount: activeSuppliers,
-                stockDeficit: Math.max(0, product.lowStock - product.quantity + 1)
-            };
-        });
+                // Get supplier names and details
+                const supplierDetails = activeSuppliers.map(supplier => ({
+                    supplierId: supplier.id,
+                    supplierName: supplier.user?.name || 'Unknown',
+                    supplierEmail: supplier.user?.email || '',
+                    supplierPhone: supplier.user?.phoneNumber || '',
+                    priceSupplier: supplier.ProductSupplier?.priceSupplier || 0,
+                    relationshipStatus: supplier.ProductSupplier?.status || 'Unknown'
+                }));
+
+                // Get the last order for this product
+                const lastOrder = await supplierOrderItemModel.findOne({
+                    where: { productId: product.productId },
+                    include: [
+                        {
+                            model: supplierOrderModel,
+                            as: 'order',
+                            include: [
+                                {
+                                    model: supplierModel,
+                                    as: 'supplier',
+                                    include: [
+                                        {
+                                            model: userModel,
+                                            as: 'user',
+                                            attributes: ['name', 'email']
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ],
+                    order: [['createdAt', 'DESC']]
+                });
+
+                // Prepare last order information
+                const lastOrderInfo = lastOrder ? {
+                    orderId: lastOrder.order.id,
+                    quantity: lastOrder.quantity,
+                    costPrice: lastOrder.costPrice,
+                    orderDate: lastOrder.order.createdAt,
+                    orderStatus: lastOrder.order.status,
+                    supplierName: lastOrder.order.supplier?.user?.name || 'Unknown',
+                    daysSinceLastOrder: Math.floor(
+                        (new Date() - new Date(lastOrder.order.createdAt)) / (1000 * 60 * 60 * 24)
+                    )
+                } : null;
+
+                return {
+                    productId: product.productId,
+                    name: product.name,
+                    quantity: product.quantity,
+                    lowStock: product.lowStock,
+                    category: product.category?.categoryName || 'No category',
+                    alertLevel: product.quantity === 0 ? 'CRITICAL' :
+                        product.quantity <= Math.floor(product.lowStock * 0.5) ? 'HIGH' : 'MEDIUM',
+                    hasActiveSuppliers: activeSuppliers.length > 0,
+                    activeSupplierCount: activeSuppliers.length,
+                    stockDeficit: Math.max(0, product.lowStock - product.quantity + 1),
+
+                    // 🔹 NEW: Supplier information
+                    suppliers: supplierDetails,
+                    supplierNames: supplierDetails.map(s => s.supplierName), // Array of supplier names
+
+                    // 🔹 NEW: Last order information
+                    lastOrder: lastOrderInfo
+                };
+            })
+        );
+
+        // Filter: Only return items that have active suppliers
+        const itemsWithActiveSuppliers = enhancedAnalysis.filter(item => item.hasActiveSuppliers === true);
 
         return res.status(200).json({
             success: true,
-            message: `Found ${lowStockProducts.length} low stock items`,
-            data: simpleAnalysis,
-            count: lowStockProducts.length
+            message: itemsWithActiveSuppliers.length > 0 ?
+                `Found ${itemsWithActiveSuppliers.length} low stock items with active suppliers` :
+                'No low stock items with active suppliers found',
+            data: itemsWithActiveSuppliers,
+            count: itemsWithActiveSuppliers.length,
+            summary: {
+                totalLowStockProducts: lowStockProducts.length,
+                itemsWithActiveSuppliers: itemsWithActiveSuppliers.length,
+                itemsFilteredOut: lowStockProducts.length - itemsWithActiveSuppliers.length,
+                totalUniqueSuppliers: [...new Set(itemsWithActiveSuppliers.flatMap(item => item.supplierNames))].length
+            }
         });
 
     } catch (error) {
-        console.error('Error in simple low stock analysis:', error);
+        console.error('Error in enhanced low stock analysis:', error);
         return res.status(500).json({
             success: false,
             message: 'Internal server error',
@@ -83,6 +153,7 @@ export const getLowStockItems = async (req, res) => {
         });
     }
 };
+
 
 // Generate orders for specific low-stock items (grouped by supplier)
 export const generateLowStockOrders = async (req, res) => {
