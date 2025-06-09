@@ -34,15 +34,15 @@ export const getLowStockItems = async (req, res) => {
                     as: 'suppliers',
                     attributes: ['id', 'userId'],
                     through: {
-                        attributes: ['priceSupplier'],
-                        where: { status: 'Active' }
+                        attributes: ['priceSupplier', 'status'] // Include status to see Active/NotActive
+                        // Removed where condition to get ALL suppliers (Active + NotActive)
                     },
                     include: [
                         {
                             model: userModel,
                             as: 'user',
                             attributes: ['userId', 'name', 'email', 'phoneNumber', 'isActive'],
-                            where: { isActive: 'Active' }
+                            where: { isActive: 'Active' } // Only active users
                         }
                     ]
                 }
@@ -57,10 +57,41 @@ export const getLowStockItems = async (req, res) => {
             });
         }
 
-        // Get last orders for each low stock product
+        // Filter products and get last orders for each low stock product
         const lowStockItemsWithLastOrders = await Promise.all(
             lowStockProducts.map(async (product) => {
-                // Find the last order that contained this product
+                // Check if product has any active suppliers (at least one Active relationship)
+                const hasActiveSuppliers = product.suppliers.some(supplier =>
+                    supplier.ProductSupplier?.status === 'Active'
+                );
+
+                // If no active suppliers, skip this product
+                if (!hasActiveSuppliers) {
+                    return null; // Will be filtered out
+                }
+
+                // Check if there's already a pending order for this product
+                const existingPendingOrder = await supplierOrderItemModel.findOne({
+                    where: { productId: product.productId },
+                    include: [
+                        {
+                            model: supplierOrderModel,
+                            as: 'order',
+                            where: {
+                                status: {
+                                    [Op.in]: ['Pending', 'Accepted', 'PartiallyAccepted'] // Active order statuses
+                                }
+                            }
+                        }
+                    ]
+                });
+
+                // If there's already a pending order, skip this product
+                if (existingPendingOrder) {
+                    return null; // Will be filtered out
+                }
+
+                // Find the last order that contained this product (for reference)
                 const lastOrder = await supplierOrderItemModel.findOne({
                     where: { productId: product.productId },
                     include: [
@@ -95,7 +126,9 @@ export const getLowStockItems = async (req, res) => {
                         sellPrice: product.sellPrice,
                         image: product.image,
                         category: product.category,
-                        suppliers: product.suppliers
+                        suppliers: product.suppliers, // All suppliers (Active + NotActive)
+                        activeSuppliers: product.suppliers.filter(s => s.ProductSupplier?.status === 'Active'), // Only Active suppliers
+                        hasActiveSuppliers: hasActiveSuppliers
                     },
                     lastOrder: lastOrder ? {
                         orderId: lastOrder.order.id,
@@ -112,10 +145,23 @@ export const getLowStockItems = async (req, res) => {
             })
         );
 
+        // Filter out null values (products that were excluded)
+        const filteredLowStockItems = lowStockItemsWithLastOrders.filter(item => item !== null);
+
         return res.status(200).json({
-            message: `Found ${lowStockProducts.length} low stock items`,
-            lowStockItems: lowStockItemsWithLastOrders,
-            count: lowStockProducts.length
+            message: filteredLowStockItems.length > 0 ?
+                `Found ${filteredLowStockItems.length} low stock items that need attention` :
+                'No low stock items need attention (all have pending orders or no active suppliers)',
+            lowStockItems: filteredLowStockItems,
+            count: filteredLowStockItems.length,
+            summary: {
+                totalLowStockProducts: lowStockProducts.length,
+                itemsWithPendingOrders: lowStockProducts.length - filteredLowStockItems.length -
+                    lowStockProducts.filter(p => !p.suppliers.some(s => s.ProductSupplier?.status === 'Active')).length,
+                itemsWithNoActiveSuppliers: lowStockProducts.filter(p =>
+                    !p.suppliers.some(s => s.ProductSupplier?.status === 'Active')).length,
+                itemsNeedingAttention: filteredLowStockItems.length
+            }
         });
     } catch (error) {
         console.error('Error getting low stock items:', error);
@@ -149,7 +195,7 @@ export const generateLowStockOrders = async (req, res) => {
             });
         }
 
-        // Find low-stock products with active suppliers
+        // Find low-stock products with all suppliers (Active + NotActive)
         const lowStockProducts = await productModel.findAll({
             where: productWhereCondition,
             include: [
@@ -158,15 +204,15 @@ export const generateLowStockOrders = async (req, res) => {
                     as: 'suppliers',
                     attributes: ['id', 'userId'],
                     through: {
-                        attributes: ['priceSupplier'],
-                        where: { status: 'Active' }
+                        attributes: ['priceSupplier', 'status'] // Include status
+                        // Removed where condition to get ALL suppliers
                     },
                     include: [
                         {
                             model: userModel,
                             as: 'user',
                             attributes: ['userId', 'name', 'email', 'phoneNumber', 'isActive'],
-                            where: { isActive: 'Active' }
+                            where: { isActive: 'Active' } // Only active users
                         }
                     ]
                 }
@@ -349,15 +395,15 @@ export const generateOrderForSingleItem = async (req, res) => {
                     as: 'suppliers',
                     attributes: ['id', 'userId'],
                     through: {
-                        attributes: ['priceSupplier'],
-                        where: { status: 'Active' }
+                        attributes: ['priceSupplier', 'status'] // Include status
+                        // Removed where condition to get ALL suppliers
                     },
                     include: [
                         {
                             model: userModel,
                             as: 'user',
                             attributes: ['userId', 'name', 'email', 'phoneNumber', 'isActive'],
-                            where: { isActive: 'Active' }
+                            where: { isActive: 'Active' } // Only active users
                         }
                     ]
                 }
@@ -521,15 +567,15 @@ export const getLowStockItemDetails = async (req, res) => {
                     as: 'suppliers',
                     attributes: ['id', 'userId', 'accountBalance'],
                     through: {
-                        attributes: ['priceSupplier'],
-                        where: { status: 'Active' }
+                        attributes: ['priceSupplier', 'status'] // Include status
+                        // Removed where condition to get ALL suppliers
                     },
                     include: [
                         {
                             model: userModel,
                             as: 'user',
                             attributes: ['userId', 'name', 'email', 'phoneNumber', 'isActive'],
-                            where: { isActive: 'Active' }
+                            where: { isActive: 'Active' } // Only active users
                         }
                     ]
                 }
