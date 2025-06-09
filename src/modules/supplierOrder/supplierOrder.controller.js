@@ -565,6 +565,59 @@ export const updateSupplierOrderStatus = async (req, res) => {
             }
         }
 
+        // Store the previous status for response
+        const previousStatus = order.status;
+
+        // **FIX: Handle simple DECLINED status first**
+        if (status === 'Declined') {
+            // Simple decline - mark entire order as declined
+            await order.update({
+                status: 'Declined',
+                note: note || null
+            }, { transaction });
+
+            // Mark all order items as declined
+            await supplierOrderItemModel.update(
+                { status: 'Declined' },
+                {
+                    where: { orderId: order.id },
+                    transaction
+                }
+            );
+
+            await transaction.commit();
+
+            // Get updated order with all details
+            const updatedOrder = await supplierOrderModel.findByPk(orderId, {
+                include: [
+                    {
+                        model: supplierModel,
+                        as: 'supplier',
+                        attributes: ['id'],
+                        include: [{
+                            model: userModel,
+                            as: 'user',
+                            attributes: ['userId', 'name', 'email', 'phoneNumber']
+                        }]
+                    },
+                    {
+                        model: supplierOrderItemModel,
+                        as: 'items',
+                        include: [{
+                            model: productModel,
+                            as: 'product',
+                            attributes: ['productId', 'name', 'image']
+                        }]
+                    }
+                ]
+            });
+
+            return res.status(200).json({
+                message: `Order status updated to Declined successfully`,
+                order: updatedOrder
+            });
+        }
+
         // Special logic for admin confirming a partially accepted order
         if (order.status === 'PartiallyAccepted' && status === 'Accepted') {
             // Recalculate total cost based only on accepted items
@@ -622,18 +675,35 @@ export const updateSupplierOrderStatus = async (req, res) => {
             });
         }
 
-        // Normal order status flow checks
-        if (order.status !== 'Pending' && order.status !== 'PartiallyAccepted' && status !== 'Delivered') {
+        // **FIX: Improved status flow validation**
+        // Allow Pending -> Accepted, Declined
+        // Allow PartiallyAccepted -> Accepted
+        // Allow Accepted -> Delivered
+        if (order.status === 'Pending' && !['Accepted', 'Declined', 'PartiallyAccepted'].includes(status)) {
             await transaction.rollback();
             return res.status(400).json({
-                message: `Cannot update order with status ${order.status} to ${status}`
+                message: `Cannot update order from ${order.status} to ${status}. Valid transitions: Accepted, Declined, PartiallyAccepted`
             });
         }
 
-        if (status === 'Delivered' && order.status !== 'Accepted') {
+        if (order.status === 'PartiallyAccepted' && !['Accepted', 'Delivered'].includes(status)) {
             await transaction.rollback();
             return res.status(400).json({
-                message: 'Order must be Accepted before it can be marked as Delivered'
+                message: `Cannot update order from ${order.status} to ${status}. Valid transitions: Accepted, Delivered`
+            });
+        }
+
+        if (order.status === 'Accepted' && status !== 'Delivered') {
+            await transaction.rollback();
+            return res.status(400).json({
+                message: `Cannot update order from ${order.status} to ${status}. Valid transition: Delivered`
+            });
+        }
+
+        if (['Declined', 'Delivered'].includes(order.status)) {
+            await transaction.rollback();
+            return res.status(400).json({
+                message: `Cannot update order with status ${order.status}. Order is already finalized.`
             });
         }
 
