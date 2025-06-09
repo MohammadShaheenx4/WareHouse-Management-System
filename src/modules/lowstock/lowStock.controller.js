@@ -48,7 +48,7 @@ export const getLowStockItems = async (req, res) => {
             ]
         });
 
-        // Get last order information for each product
+        // Get enhanced analysis with order status filtering
         const enhancedAnalysis = await Promise.all(
             lowStockProducts.map(async (product) => {
                 // Get all active suppliers for this product
@@ -56,18 +56,13 @@ export const getLowStockItems = async (req, res) => {
                     s.ProductSupplier?.status === 'Active' && s.user?.isActive === 'Active'
                 ) || [];
 
-                // Get supplier names and details
-                const supplierDetails = activeSuppliers.map(supplier => ({
-                    supplierId: supplier.id,
-                    supplierName: supplier.user?.name || 'Unknown',
-                    supplierEmail: supplier.user?.email || '',
-                    supplierPhone: supplier.user?.phoneNumber || '',
-                    priceSupplier: supplier.ProductSupplier?.priceSupplier || 0,
-                    relationshipStatus: supplier.ProductSupplier?.status || 'Unknown'
-                }));
+                // Skip products without active suppliers
+                if (activeSuppliers.length === 0) {
+                    return null; // Will be filtered out
+                }
 
-                // Get the last order for this product
-                const lastOrder = await supplierOrderItemModel.findOne({
+                // 🔹 CHECK FOR EXISTING ORDERS - KEY FILTERING LOGIC
+                const existingOrders = await supplierOrderItemModel.findAll({
                     where: { productId: product.productId },
                     include: [
                         {
@@ -91,7 +86,33 @@ export const getLowStockItems = async (req, res) => {
                     order: [['createdAt', 'DESC']]
                 });
 
-                // Prepare last order information
+                // Check for pending/active orders that should block this item
+                const pendingOrActiveOrders = existingOrders.filter(orderItem => {
+                    const status = orderItem.order.status;
+                    return ['Pending', 'Accepted', 'PartiallyAccepted', 'Delivered'].includes(status);
+                });
+
+                // 🔹 FILTER LOGIC: Skip if there are pending/active orders
+                if (pendingOrActiveOrders.length > 0) {
+                    console.log(`⏸️ Skipping product ${product.name} - Has pending/active orders:`,
+                        pendingOrActiveOrders.map(o => `Order ${o.order.id} (${o.order.status})`));
+                    return null; // Will be filtered out
+                }
+
+                // Get supplier names and details
+                const supplierDetails = activeSuppliers.map(supplier => ({
+                    supplierId: supplier.id,
+                    supplierName: supplier.user?.name || 'Unknown',
+                    supplierEmail: supplier.user?.email || '',
+                    supplierPhone: supplier.user?.phoneNumber || '',
+                    priceSupplier: supplier.ProductSupplier?.priceSupplier || 0,
+                    relationshipStatus: supplier.ProductSupplier?.status || 'Unknown'
+                }));
+
+                // Get the most recent order (including rejected ones for reference)
+                const lastOrder = existingOrders[0]; // Most recent order
+
+                // Prepare last order information (even if rejected, for reference)
                 const lastOrderInfo = lastOrder ? {
                     orderId: lastOrder.order.id,
                     quantity: lastOrder.quantity,
@@ -101,8 +122,12 @@ export const getLowStockItems = async (req, res) => {
                     supplierName: lastOrder.order.supplier?.user?.name || 'Unknown',
                     daysSinceLastOrder: Math.floor(
                         (new Date() - new Date(lastOrder.order.createdAt)) / (1000 * 60 * 60 * 24)
-                    )
+                    ),
+                    wasRejected: lastOrder.order.status === 'Declined' // Flag to indicate if last order was rejected
                 } : null;
+
+                console.log(`✅ Including product ${product.name} - ${lastOrder ?
+                    `Last order was ${lastOrder.order.status}` : 'No previous orders'}`);
 
                 return {
                     productId: product.productId,
@@ -116,36 +141,59 @@ export const getLowStockItems = async (req, res) => {
                     activeSupplierCount: activeSuppliers.length,
                     stockDeficit: Math.max(0, product.lowStock - product.quantity + 1),
 
-                    // 🔹 NEW: Supplier information
+                    // Supplier information
                     suppliers: supplierDetails,
-                    supplierNames: supplierDetails.map(s => s.supplierName), // Array of supplier names
+                    supplierNames: supplierDetails.map(s => s.supplierName),
 
-                    // 🔹 NEW: Last order information
-                    lastOrder: lastOrderInfo
+                    // Last order information (including rejection status)
+                    lastOrder: lastOrderInfo,
+
+                    // 🔹 NEW: Order status indicators
+                    orderStatus: {
+                        hasNoOrders: !lastOrder,
+                        lastOrderWasRejected: lastOrder?.order.status === 'Declined',
+                        canPlaceNewOrder: true, // Since we filtered out pending orders
+                        totalOrdersPlaced: existingOrders.length,
+                        rejectedOrdersCount: existingOrders.filter(o => o.order.status === 'Declined').length
+                    }
                 };
             })
         );
 
-        // Filter: Only return items that have active suppliers
-        const itemsWithActiveSuppliers = enhancedAnalysis.filter(item => item.hasActiveSuppliers === true);
+        // Filter out null values (products that were excluded due to pending orders or no suppliers)
+        const filteredItems = enhancedAnalysis.filter(item => item !== null);
+
+        // Calculate summary statistics
+        const totalRejectedItems = filteredItems.filter(item => item.lastOrder?.wasRejected).length;
+        const totalNewItems = filteredItems.filter(item => !item.lastOrder).length;
 
         return res.status(200).json({
             success: true,
-            message: itemsWithActiveSuppliers.length > 0 ?
-                `Found ${itemsWithActiveSuppliers.length} low stock items with active suppliers` :
-                'No low stock items with active suppliers found',
-            data: itemsWithActiveSuppliers,
-            count: itemsWithActiveSuppliers.length,
+            message: filteredItems.length > 0 ?
+                `Found ${filteredItems.length} low stock items ready for new orders` :
+                'No low stock items available for ordering (all have active orders or no suppliers)',
+            data: filteredItems,
+            count: filteredItems.length,
             summary: {
                 totalLowStockProducts: lowStockProducts.length,
-                itemsWithActiveSuppliers: itemsWithActiveSuppliers.length,
-                itemsFilteredOut: lowStockProducts.length - itemsWithActiveSuppliers.length,
-                totalUniqueSuppliers: [...new Set(itemsWithActiveSuppliers.flatMap(item => item.supplierNames))].length
+                availableForOrdering: filteredItems.length,
+                itemsWithPendingOrders: lowStockProducts.length - filteredItems.length -
+                    lowStockProducts.filter(p => !p.suppliers?.some(s => s.ProductSupplier?.status === 'Active')).length,
+                itemsWithNoActiveSuppliers: lowStockProducts.filter(p =>
+                    !p.suppliers?.some(s => s.ProductSupplier?.status === 'Active')).length,
+                itemsWithRejectedLastOrder: totalRejectedItems,
+                itemsWithNoOrderHistory: totalNewItems,
+                totalUniqueSuppliers: [...new Set(filteredItems.flatMap(item => item.supplierNames))].length
+            },
+            filteringInfo: {
+                description: "Items with pending, accepted, or delivered orders are excluded",
+                includedStatuses: ["No orders", "Declined orders only"],
+                excludedStatuses: ["Pending", "Accepted", "PartiallyAccepted", "Delivered"]
             }
         });
 
     } catch (error) {
-        console.error('Error in enhanced low stock analysis:', error);
+        console.error('Error in filtered low stock analysis:', error);
         return res.status(500).json({
             success: false,
             message: 'Internal server error',
@@ -153,7 +201,6 @@ export const getLowStockItems = async (req, res) => {
         });
     }
 };
-
 
 // Generate orders for specific low-stock items (grouped by supplier)
 export const generateLowStockOrders = async (req, res) => {
