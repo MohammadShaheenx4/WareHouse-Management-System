@@ -6,7 +6,7 @@ pass:Gf85!m#atWCT6mB
 host:pro.freedb.tech
 
 */
-
+var x = 10;
 
 const sequelize = new Sequelize('warehousemanagement', 'shaheen', 'Gf85!m#atWCT6mB', {
     host: 'pro.freedb.tech',
