@@ -11,7 +11,6 @@ import sequelize from '../../../DB/Connection.js';
 // Get all low-stock items with their last orders
 export const getLowStockItems = async (req, res) => {
     try {
-        // Find all products where quantity <= lowStock
         const lowStockProducts = await productModel.findAll({
             where: {
                 [Op.and]: [
@@ -32,140 +31,56 @@ export const getLowStockItems = async (req, res) => {
                 {
                     model: supplierModel,
                     as: 'suppliers',
-                    attributes: ['id', 'userId'],
+                    attributes: ['id'],
                     through: {
-                        attributes: ['priceSupplier', 'status'] // Include status to see Active/NotActive
-                        // Removed where condition to get ALL suppliers (Active + NotActive)
+                        attributes: ['status']
                     },
+                    required: false,
                     include: [
                         {
                             model: userModel,
                             as: 'user',
-                            attributes: ['userId', 'name', 'email', 'phoneNumber', 'isActive'],
-                            where: { isActive: 'Active' } // Only active users
+                            attributes: ['name', 'isActive'],
+                            required: false
                         }
                     ]
                 }
             ]
         });
 
-        if (lowStockProducts.length === 0) {
-            return res.status(200).json({
-                message: 'No low stock items found',
-                lowStockItems: [],
-                count: 0
-            });
-        }
+        const simpleAnalysis = lowStockProducts.map(product => {
+            const activeSuppliers = product.suppliers?.filter(s =>
+                s.ProductSupplier?.status === 'Active' && s.user?.isActive === 'Active'
+            ).length || 0;
 
-        // Filter products and get last orders for each low stock product
-        const lowStockItemsWithLastOrders = await Promise.all(
-            lowStockProducts.map(async (product) => {
-                // Check if product has any active suppliers (at least one Active relationship)
-                const hasActiveSuppliers = product.suppliers.some(supplier =>
-                    supplier.ProductSupplier?.status === 'Active'
-                );
-
-                // If no active suppliers, skip this product
-                if (!hasActiveSuppliers) {
-                    return null; // Will be filtered out
-                }
-
-                // Check if there's already a pending order for this product
-                const existingPendingOrder = await supplierOrderItemModel.findOne({
-                    where: { productId: product.productId },
-                    include: [
-                        {
-                            model: supplierOrderModel,
-                            as: 'order',
-                            where: {
-                                status: {
-                                    [Op.in]: ['Pending', 'Accepted', 'PartiallyAccepted'] // Active order statuses
-                                }
-                            }
-                        }
-                    ]
-                });
-
-                // If there's already a pending order, skip this product
-                if (existingPendingOrder) {
-                    return null; // Will be filtered out
-                }
-
-                // Find the last order that contained this product (for reference)
-                const lastOrder = await supplierOrderItemModel.findOne({
-                    where: { productId: product.productId },
-                    include: [
-                        {
-                            model: supplierOrderModel,
-                            as: 'order',
-                            include: [
-                                {
-                                    model: supplierModel,
-                                    as: 'supplier',
-                                    include: [
-                                        {
-                                            model: userModel,
-                                            as: 'user',
-                                            attributes: ['userId', 'name', 'email']
-                                        }
-                                    ]
-                                }
-                            ]
-                        }
-                    ],
-                    order: [['createdAt', 'DESC']]
-                });
-
-                return {
-                    product: {
-                        productId: product.productId,
-                        name: product.name,
-                        quantity: product.quantity,
-                        lowStock: product.lowStock,
-                        costPrice: product.costPrice,
-                        sellPrice: product.sellPrice,
-                        image: product.image,
-                        category: product.category,
-                        suppliers: product.suppliers, // All suppliers (Active + NotActive)
-                        activeSuppliers: product.suppliers.filter(s => s.ProductSupplier?.status === 'Active'), // Only Active suppliers
-                        hasActiveSuppliers: hasActiveSuppliers
-                    },
-                    lastOrder: lastOrder ? {
-                        orderId: lastOrder.order.id,
-                        orderDate: lastOrder.order.createdAt,
-                        quantity: lastOrder.quantity,
-                        costPrice: lastOrder.costPrice,
-                        status: lastOrder.order.status,
-                        supplier: lastOrder.order.supplier
-                    } : null,
-                    stockDeficit: product.lowStock - product.quantity + 1, // Minimum to order to get above threshold
-                    alertLevel: product.quantity === 0 ? 'CRITICAL' :
-                        product.quantity <= Math.floor(product.lowStock * 0.5) ? 'HIGH' : 'MEDIUM'
-                };
-            })
-        );
-
-        // Filter out null values (products that were excluded)
-        const filteredLowStockItems = lowStockItemsWithLastOrders.filter(item => item !== null);
+            return {
+                productId: product.productId,
+                name: product.name,
+                quantity: product.quantity,
+                lowStock: product.lowStock,
+                category: product.category?.categoryName || 'No category',
+                alertLevel: product.quantity === 0 ? 'CRITICAL' :
+                    product.quantity <= Math.floor(product.lowStock * 0.5) ? 'HIGH' : 'MEDIUM',
+                hasActiveSuppliers: activeSuppliers > 0,
+                activeSupplierCount: activeSuppliers,
+                stockDeficit: Math.max(0, product.lowStock - product.quantity + 1)
+            };
+        });
 
         return res.status(200).json({
-            message: filteredLowStockItems.length > 0 ?
-                `Found ${filteredLowStockItems.length} low stock items that need attention` :
-                'No low stock items need attention (all have pending orders or no active suppliers)',
-            lowStockItems: filteredLowStockItems,
-            count: filteredLowStockItems.length,
-            summary: {
-                totalLowStockProducts: lowStockProducts.length,
-                itemsWithPendingOrders: lowStockProducts.length - filteredLowStockItems.length -
-                    lowStockProducts.filter(p => !p.suppliers.some(s => s.ProductSupplier?.status === 'Active')).length,
-                itemsWithNoActiveSuppliers: lowStockProducts.filter(p =>
-                    !p.suppliers.some(s => s.ProductSupplier?.status === 'Active')).length,
-                itemsNeedingAttention: filteredLowStockItems.length
-            }
+            success: true,
+            message: `Found ${lowStockProducts.length} low stock items`,
+            data: simpleAnalysis,
+            count: lowStockProducts.length
         });
+
     } catch (error) {
-        console.error('Error getting low stock items:', error);
-        return res.status(500).json({ message: 'Internal server error' });
+        console.error('Error in simple low stock analysis:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Internal server error',
+            error: process.env.NODE_ENV === 'development' ? error.message : 'Server error'
+        });
     }
 };
 
