@@ -12,6 +12,10 @@ router.get('/orders-overview', Auth.adminOnly, controller.getOrdersOverview);
 router.get('/orders-overview/weekly-pattern', Auth.adminOnly, controller.getWeeklyPattern);
 router.get('/top-products', Auth.adminOnly, controller.getTopProducts);
 router.get('/order-counts', Auth.adminOnly, controller.getOrderCount);
-
+router.get('/profit', Auth.adminOnly, controller.getProfitData);
+router.get('/orders-chart', Auth.adminOnly, controller.getOrdersChart);
+router.get('/orders-chart/period', Auth.adminOnly, controller.getOrdersChartByPeriod);
+router.get('/profit-chart', Auth.adminOnly, controller.getProfitChart);
+router.get('/profit-chart/period', Auth.adminOnly, controller.getProfitChartByPeriod);
 
 export default router;

@@ -1305,3 +1305,574 @@ export const getOrderCount = async (req, res) => {
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
+export const getProfitData = async (req, res) => {
+    try {
+        // Get current week data (last 7 days)
+        const endDate = new Date();
+        const startDate = new Date(endDate.getTime() - 6 * 24 * 60 * 60 * 1000);
+
+        // Get previous week data for comparison
+        const prevEndDate = new Date(startDate.getTime() - 1);
+        const prevStartDate = new Date(prevEndDate.getTime() - 6 * 24 * 60 * 60 * 1000);
+
+        // Query for current week daily profit
+        const currentWeekQuery = `
+            SELECT 
+                DATE(co.createdAt) as date,
+                DAYNAME(co.createdAt) as dayName,
+                DAYOFWEEK(co.createdAt) as dayOfWeek,
+                COALESCE(SUM(co.amountPaid), 0) as revenue,
+                COALESCE(SUM(coi.quantity * p.costPrice), 0) as costs,
+                COALESCE(SUM(co.amountPaid) - SUM(coi.quantity * p.costPrice), 0) as profit
+            FROM customerorders co
+            INNER JOIN customerorderItems coi ON co.id = coi.orderId
+            INNER JOIN product p ON coi.productId = p.productId
+            WHERE co.createdAt >= :startDate 
+                AND co.createdAt <= :endDate
+                AND co.status = 'Shipped'
+            GROUP BY DATE(co.createdAt), DAYNAME(co.createdAt), DAYOFWEEK(co.createdAt)
+            ORDER BY DATE(co.createdAt)
+        `;
+
+        // Query for previous week total profit
+        const previousWeekQuery = `
+            SELECT 
+                COALESCE(SUM(co.amountPaid) - SUM(coi.quantity * p.costPrice), 0) as totalProfit
+            FROM customerorders co
+            INNER JOIN customerorderItems coi ON co.id = coi.orderId
+            INNER JOIN product p ON coi.productId = p.productId
+            WHERE co.createdAt >= :prevStartDate 
+                AND co.createdAt <= :prevEndDate
+                AND co.status = 'Shipped'
+        `;
+
+        const [currentWeekResults, previousWeekResults] = await Promise.all([
+            sequelize.query(currentWeekQuery, {
+                replacements: { startDate, endDate },
+                type: sequelize.QueryTypes.SELECT
+            }),
+            sequelize.query(previousWeekQuery, {
+                replacements: { prevStartDate, prevEndDate },
+                type: sequelize.QueryTypes.SELECT
+            })
+        ]);
+
+        // Create day mapping to ensure all days are present
+        const dayOrder = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const dayMap = {};
+
+        // Initialize with 0 for all days
+        dayOrder.forEach(day => {
+            dayMap[day] = 0;
+        });
+
+        // Fill in actual data
+        currentWeekResults.forEach(row => {
+            dayMap[row.dayName] = parseFloat(row.profit) || 0;
+        });
+
+        // Convert to array format for chart (SAT to FRI as shown in image)
+        const chartData = [
+            dayMap['Saturday'],
+            dayMap['Sunday'],
+            dayMap['Monday'],
+            dayMap['Tuesday'],
+            dayMap['Wednesday'],
+            dayMap['Thursday'],
+            dayMap['Friday']
+        ];
+
+        // Calculate totals and growth
+        const currentWeekTotal = Object.values(dayMap).reduce((sum, profit) => sum + profit, 0);
+        const previousWeekTotal = parseFloat(previousWeekResults[0]?.totalProfit || 0);
+
+        // Calculate growth percentage
+        let growth = 0;
+        if (previousWeekTotal > 0) {
+            growth = Math.round(((currentWeekTotal - previousWeekTotal) / previousWeekTotal) * 100);
+        } else if (currentWeekTotal > 0) {
+            growth = 100;
+        }
+
+        return res.status(200).json({
+            profit: Math.round(currentWeekTotal * 100) / 100, // Current week total profit
+            growth: growth, // Growth percentage
+            data: chartData // Array of 7 values for the chart
+        });
+
+    } catch (error) {
+        console.error('Error getting profit data:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+export const getOrdersChart = async (req, res) => {
+    try {
+        const { startDate, endDate } = req.query;
+
+        // Default to current week if no dates provided
+        let start, end;
+        if (startDate && endDate) {
+            start = new Date(startDate);
+            end = new Date(endDate);
+            // Set end date to end of day
+            end.setHours(23, 59, 59, 999);
+        } else {
+            // Default to current week (last 7 days)
+            end = new Date();
+            start = new Date(end.getTime() - 6 * 24 * 60 * 60 * 1000);
+        }
+
+        // Query to get revenue grouped by day of week within the date range
+        const ordersQuery = `
+            SELECT 
+                DAYOFWEEK(createdAt) as dayOfWeek,
+                DAYNAME(createdAt) as dayName,
+                COALESCE(SUM(amountPaid), 0) as revenue,
+                COUNT(*) as orderCount
+            FROM customerorders 
+            WHERE createdAt >= :startDate 
+                AND createdAt <= :endDate
+                AND status = 'Shipped'
+            GROUP BY DAYOFWEEK(createdAt), DAYNAME(createdAt)
+            ORDER BY DAYOFWEEK(createdAt)
+        `;
+
+        const results = await sequelize.query(ordersQuery, {
+            replacements: {
+                startDate: start,
+                endDate: end
+            },
+            type: sequelize.QueryTypes.SELECT
+        });
+
+        // Create day mapping (MySQL DAYOFWEEK: 1=Sunday, 2=Monday, ..., 7=Saturday)
+        const dayMap = {
+            'Saturday': 0,   // dayOfWeek = 7
+            'Sunday': 0,     // dayOfWeek = 1
+            'Monday': 0,     // dayOfWeek = 2
+            'Tuesday': 0,    // dayOfWeek = 3
+            'Wednesday': 0,  // dayOfWeek = 4
+            'Thursday': 0,   // dayOfWeek = 5
+            'Friday': 0      // dayOfWeek = 6
+        };
+
+        // Fill in actual data
+        results.forEach(row => {
+            dayMap[row.dayName] = Math.round(parseFloat(row.revenue) * 100) / 100;
+        });
+
+        // Convert to array format for chart (SAT to FRI as shown in image)
+        const chartData = [
+            { day: 'SAT', value: dayMap['Saturday'] },
+            { day: 'SUN', value: dayMap['Sunday'] },
+            { day: 'MON', value: dayMap['Monday'] },
+            { day: 'TUE', value: dayMap['Tuesday'] },
+            { day: 'WED', value: dayMap['Wednesday'] },
+            { day: 'THU', value: dayMap['Thursday'] },
+            { day: 'FRI', value: dayMap['Friday'] }
+        ];
+
+        // Calculate total revenue and max value for scaling
+        const totalRevenue = Object.values(dayMap).reduce((sum, value) => sum + value, 0);
+        const maxValue = Math.max(...Object.values(dayMap));
+
+        return res.status(200).json({
+            data: chartData,
+            totalRevenue: Math.round(totalRevenue * 100) / 100,
+            maxValue: Math.round(maxValue * 100) / 100,
+            dateRange: {
+                start: start.toISOString().split('T')[0],
+                end: end.toISOString().split('T')[0]
+            }
+        });
+
+    } catch (error) {
+        console.error('Error getting orders chart data:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+/**
+ * @desc    Get orders overview data for different time periods (alternative endpoint)
+ * @route   GET /api/dashboard/orders-chart/period
+ * @access  Admin
+ * @query   period (daily, weekly, monthly), count (number of periods)
+ */
+export const getOrdersChartByPeriod = async (req, res) => {
+    try {
+        const {
+            period = 'weekly', // daily, weekly, monthly
+            count = 1 // number of periods to look back
+        } = req.query;
+
+        let startDate, endDate, groupBy, selectFormat;
+        const now = new Date();
+
+        switch (period) {
+            case 'daily':
+                // Last N days
+                endDate = new Date(now);
+                startDate = new Date(now.getTime() - ((parseInt(count) - 1) * 24 * 60 * 60 * 1000));
+                groupBy = 'DATE(createdAt)';
+                selectFormat = 'DATE_FORMAT(createdAt, "%a") as dayLabel, DATE(createdAt) as dateValue';
+                break;
+
+            case 'weekly':
+                // Last N weeks (default)
+                endDate = new Date(now);
+                startDate = new Date(now.getTime() - ((parseInt(count) * 7 - 1) * 24 * 60 * 60 * 1000));
+                groupBy = 'DAYOFWEEK(createdAt)';
+                selectFormat = 'DAYNAME(createdAt) as dayLabel, DAYOFWEEK(createdAt) as dayOfWeek';
+                break;
+
+            case 'monthly':
+                // Last N months
+                endDate = new Date(now);
+                startDate = new Date(now);
+                startDate.setMonth(startDate.getMonth() - parseInt(count) + 1);
+                startDate.setDate(1); // First day of the month
+                groupBy = 'DATE_FORMAT(createdAt, "%Y-%m")';
+                selectFormat = 'DATE_FORMAT(createdAt, "%b %Y") as dayLabel, DATE_FORMAT(createdAt, "%Y-%m") as monthValue';
+                break;
+
+            default:
+                return res.status(400).json({ message: 'Invalid period. Use: daily, weekly, or monthly' });
+        }
+
+        const query = `
+            SELECT 
+                ${selectFormat},
+                COALESCE(SUM(amountPaid), 0) as revenue,
+                COUNT(*) as orderCount
+            FROM customerorders 
+            WHERE createdAt >= :startDate 
+                AND createdAt <= :endDate
+                AND status = 'Shipped'
+            GROUP BY ${groupBy}
+            ORDER BY ${period === 'weekly' ? 'DAYOFWEEK(createdAt)' : 'createdAt'}
+        `;
+
+        const results = await sequelize.query(query, {
+            replacements: { startDate, endDate },
+            type: sequelize.QueryTypes.SELECT
+        });
+
+        let chartData;
+
+        if (period === 'weekly') {
+            // For weekly, ensure all days are present
+            const dayMap = {
+                'Saturday': 0, 'Sunday': 0, 'Monday': 0, 'Tuesday': 0,
+                'Wednesday': 0, 'Thursday': 0, 'Friday': 0
+            };
+
+            results.forEach(row => {
+                dayMap[row.dayLabel] = Math.round(parseFloat(row.revenue) * 100) / 100;
+            });
+
+            chartData = [
+                { day: 'SAT', value: dayMap['Saturday'] },
+                { day: 'SUN', value: dayMap['Sunday'] },
+                { day: 'MON', value: dayMap['Monday'] },
+                { day: 'TUE', value: dayMap['Tuesday'] },
+                { day: 'WED', value: dayMap['Wednesday'] },
+                { day: 'THU', value: dayMap['Thursday'] },
+                { day: 'FRI', value: dayMap['Friday'] }
+            ];
+        } else {
+            // For daily/monthly, use results as-is
+            chartData = results.map(row => ({
+                day: row.dayLabel,
+                value: Math.round(parseFloat(row.revenue) * 100) / 100
+            }));
+        }
+
+        const totalRevenue = chartData.reduce((sum, item) => sum + item.value, 0);
+        const maxValue = Math.max(...chartData.map(item => item.value));
+
+        return res.status(200).json({
+            data: chartData,
+            totalRevenue: Math.round(totalRevenue * 100) / 100,
+            maxValue: Math.round(maxValue * 100) / 100,
+            period: period,
+            dateRange: {
+                start: startDate.toISOString().split('T')[0],
+                end: endDate.toISOString().split('T')[0]
+            }
+        });
+
+    } catch (error) {
+        console.error('Error getting orders chart data by period:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+/**
+ * @desc    Get profit data for chart by date range
+ * @route   GET /api/dashboard/profit-chart
+ * @access  Admin
+ * @query   startDate, endDate (optional - defaults to current week)
+ */
+export const getProfitChart = async (req, res) => {
+    try {
+        const { startDate, endDate } = req.query;
+
+        // Default to current week if no dates provided
+        let start, end;
+        if (startDate && endDate) {
+            start = new Date(startDate);
+            end = new Date(endDate);
+            // Set end date to end of day
+            end.setHours(23, 59, 59, 999);
+        } else if (startDate) {
+            // If only start date provided, end date is today
+            start = new Date(startDate);
+            end = new Date();
+            end.setHours(23, 59, 59, 999);
+        } else {
+            // Default to current week (last 7 days)
+            end = new Date();
+            start = new Date(end.getTime() - 6 * 24 * 60 * 60 * 1000);
+        }
+
+        // Calculate previous period for growth comparison
+        const periodLength = end.getTime() - start.getTime();
+        const prevEnd = new Date(start.getTime() - 1);
+        const prevStart = new Date(prevEnd.getTime() - periodLength);
+
+        // Query for current period daily profit grouped by day of week
+        const currentPeriodQuery = `
+            SELECT 
+                DAYOFWEEK(co.createdAt) as dayOfWeek,
+                DAYNAME(co.createdAt) as dayName,
+                COALESCE(SUM(co.amountPaid), 0) as revenue,
+                COALESCE(SUM(coi.quantity * p.costPrice), 0) as costs,
+                COALESCE(SUM(co.amountPaid) - SUM(coi.quantity * p.costPrice), 0) as profit
+            FROM customerorders co
+            INNER JOIN customerorderItems coi ON co.id = coi.orderId
+            INNER JOIN product p ON coi.productId = p.productId
+            WHERE co.createdAt >= :startDate 
+                AND co.createdAt <= :endDate
+                AND co.status = 'Shipped'
+            GROUP BY DAYOFWEEK(co.createdAt), DAYNAME(co.createdAt)
+            ORDER BY DAYOFWEEK(co.createdAt)
+        `;
+
+        // Query for previous period total profit
+        const previousPeriodQuery = `
+            SELECT 
+                COALESCE(SUM(co.amountPaid) - SUM(coi.quantity * p.costPrice), 0) as totalProfit
+            FROM customerorders co
+            INNER JOIN customerorderItems coi ON co.id = coi.orderId
+            INNER JOIN product p ON coi.productId = p.productId
+            WHERE co.createdAt >= :prevStartDate 
+                AND co.createdAt <= :prevEndDate
+                AND co.status = 'Shipped'
+        `;
+
+        const [currentResults, previousResults] = await Promise.all([
+            sequelize.query(currentPeriodQuery, {
+                replacements: {
+                    startDate: start,
+                    endDate: end
+                },
+                type: sequelize.QueryTypes.SELECT
+            }),
+            sequelize.query(previousPeriodQuery, {
+                replacements: {
+                    prevStartDate: prevStart,
+                    prevEndDate: prevEnd
+                },
+                type: sequelize.QueryTypes.SELECT
+            })
+        ]);
+
+        // Create day mapping (MySQL DAYOFWEEK: 1=Sunday, 2=Monday, ..., 7=Saturday)
+        const dayMap = {
+            'Saturday': 0,   // dayOfWeek = 7
+            'Sunday': 0,     // dayOfWeek = 1
+            'Monday': 0,     // dayOfWeek = 2
+            'Tuesday': 0,    // dayOfWeek = 3
+            'Wednesday': 0,  // dayOfWeek = 4
+            'Thursday': 0,   // dayOfWeek = 5
+            'Friday': 0      // dayOfWeek = 6
+        };
+
+        // Fill in actual data
+        currentResults.forEach(row => {
+            dayMap[row.dayName] = Math.round(parseFloat(row.profit) * 100) / 100;
+        });
+
+        // Convert to array format for chart (SAT to FRI)
+        const chartData = [
+            dayMap['Saturday'],
+            dayMap['Sunday'],
+            dayMap['Monday'],
+            dayMap['Tuesday'],
+            dayMap['Wednesday'],
+            dayMap['Thursday'],
+            dayMap['Friday']
+        ];
+
+        // Calculate totals and growth
+        const currentPeriodTotal = Object.values(dayMap).reduce((sum, profit) => sum + profit, 0);
+        const previousPeriodTotal = parseFloat(previousResults[0]?.totalProfit || 0);
+
+        // Calculate growth percentage
+        let growth = 0;
+        if (previousPeriodTotal > 0) {
+            growth = Math.round(((currentPeriodTotal - previousPeriodTotal) / previousPeriodTotal) * 100);
+        } else if (currentPeriodTotal > 0) {
+            growth = 100;
+        }
+
+        return res.status(200).json({
+            profit: Math.round(currentPeriodTotal * 100) / 100,
+            growth: growth,
+            data: chartData,
+            dateRange: {
+                start: start.toISOString().split('T')[0],
+                end: end.toISOString().split('T')[0]
+            }
+        });
+
+    } catch (error) {
+        console.error('Error getting profit chart data:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+/**
+ * @desc    Get profit data for different time periods
+ * @route   GET /api/dashboard/profit-chart/period
+ * @access  Admin
+ * @query   period (daily, weekly, monthly), count (number of periods)
+ */
+export const getProfitChartByPeriod = async (req, res) => {
+    try {
+        const {
+            period = 'weekly', // daily, weekly, monthly
+            count = 1 // number of periods to look back
+        } = req.query;
+
+        let startDate, endDate;
+        const now = new Date();
+
+        switch (period) {
+            case 'daily':
+                // Last N days
+                endDate = new Date(now);
+                startDate = new Date(now.getTime() - ((parseInt(count) - 1) * 24 * 60 * 60 * 1000));
+                break;
+
+            case 'weekly':
+                // Last N weeks (default)
+                endDate = new Date(now);
+                startDate = new Date(now.getTime() - ((parseInt(count) * 7 - 1) * 24 * 60 * 60 * 1000));
+                break;
+
+            case 'monthly':
+                // Last N months
+                endDate = new Date(now);
+                startDate = new Date(now);
+                startDate.setMonth(startDate.getMonth() - parseInt(count) + 1);
+                startDate.setDate(1); // First day of the month
+                break;
+
+            default:
+                return res.status(400).json({ message: 'Invalid period. Use: daily, weekly, or monthly' });
+        }
+
+        // Calculate previous period for comparison
+        const periodLength = endDate.getTime() - startDate.getTime();
+        const prevEndDate = new Date(startDate.getTime() - 1);
+        const prevStartDate = new Date(prevEndDate.getTime() - periodLength);
+
+        // Query for current period
+        const currentQuery = `
+            SELECT 
+                DAYOFWEEK(co.createdAt) as dayOfWeek,
+                DAYNAME(co.createdAt) as dayName,
+                COALESCE(SUM(co.amountPaid) - SUM(coi.quantity * p.costPrice), 0) as profit
+            FROM customerorders co
+            INNER JOIN customerorderItems coi ON co.id = coi.orderId
+            INNER JOIN product p ON coi.productId = p.productId
+            WHERE co.createdAt >= :startDate 
+                AND co.createdAt <= :endDate
+                AND co.status = 'Shipped'
+            GROUP BY DAYOFWEEK(co.createdAt), DAYNAME(co.createdAt)
+            ORDER BY DAYOFWEEK(co.createdAt)
+        `;
+
+        // Query for previous period total
+        const previousQuery = `
+            SELECT 
+                COALESCE(SUM(co.amountPaid) - SUM(coi.quantity * p.costPrice), 0) as totalProfit
+            FROM customerorders co
+            INNER JOIN customerorderItems coi ON co.id = coi.orderId
+            INNER JOIN product p ON coi.productId = p.productId
+            WHERE co.createdAt >= :prevStartDate 
+                AND co.createdAt <= :prevEndDate
+                AND co.status = 'Shipped'
+        `;
+
+        const [currentResults, previousResults] = await Promise.all([
+            sequelize.query(currentQuery, {
+                replacements: { startDate, endDate },
+                type: sequelize.QueryTypes.SELECT
+            }),
+            sequelize.query(previousQuery, {
+                replacements: {
+                    prevStartDate,
+                    prevEndDate
+                },
+                type: sequelize.QueryTypes.SELECT
+            })
+        ]);
+
+        // For weekly view, ensure all days are present
+        const dayMap = {
+            'Saturday': 0, 'Sunday': 0, 'Monday': 0, 'Tuesday': 0,
+            'Wednesday': 0, 'Thursday': 0, 'Friday': 0
+        };
+
+        currentResults.forEach(row => {
+            dayMap[row.dayName] = Math.round(parseFloat(row.profit) * 100) / 100;
+        });
+
+        const chartData = [
+            dayMap['Saturday'],
+            dayMap['Sunday'],
+            dayMap['Monday'],
+            dayMap['Tuesday'],
+            dayMap['Wednesday'],
+            dayMap['Thursday'],
+            dayMap['Friday']
+        ];
+
+        const currentTotal = Object.values(dayMap).reduce((sum, profit) => sum + profit, 0);
+        const previousTotal = parseFloat(previousResults[0]?.totalProfit || 0);
+
+        let growth = 0;
+        if (previousTotal > 0) {
+            growth = Math.round(((currentTotal - previousTotal) / previousTotal) * 100);
+        } else if (currentTotal > 0) {
+            growth = 100;
+        }
+
+        return res.status(200).json({
+            profit: Math.round(currentTotal * 100) / 100,
+            growth: growth,
+            data: chartData,
+            period: period,
+            dateRange: {
+                start: startDate.toISOString().split('T')[0],
+                end: endDate.toISOString().split('T')[0]
+            }
+        });
+
+    } catch (error) {
+        console.error('Error getting profit chart data by period:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
