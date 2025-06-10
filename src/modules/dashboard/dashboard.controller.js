@@ -1876,3 +1876,322 @@ export const getProfitChartByPeriod = async (req, res) => {
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
+
+/**
+ * @desc    Get product sales overview by date range
+ * @route   GET /api/dashboard/product-sales/:productId
+ * @access  Admin
+ * @query   startDate, endDate (optional - defaults to current week)
+ */
+export const getProductSales = async (req, res) => {
+    try {
+        const { productId } = req.params;
+        const { startDate, endDate } = req.query;
+
+        // Validate product ID
+        if (!productId || isNaN(productId)) {
+            return res.status(400).json({ message: 'Valid product ID is required' });
+        }
+
+        // Check if product exists
+        const product = await productModel.findByPk(productId);
+        if (!product) {
+            return res.status(404).json({ message: 'Product not found' });
+        }
+
+        // Default to current week if no dates provided
+        let start, end;
+        if (startDate && endDate) {
+            start = new Date(startDate);
+            end = new Date(endDate);
+            // Set end date to end of day
+            end.setHours(23, 59, 59, 999);
+        } else if (startDate) {
+            // If only start date provided, end date is today
+            start = new Date(startDate);
+            end = new Date();
+            end.setHours(23, 59, 59, 999);
+        } else {
+            // Default to current week (last 7 days)
+            end = new Date();
+            start = new Date(end.getTime() - 6 * 24 * 60 * 60 * 1000);
+        }
+
+        // Calculate previous period for growth comparison
+        const periodLength = end.getTime() - start.getTime();
+        const prevEnd = new Date(start.getTime() - 1);
+        const prevStart = new Date(prevEnd.getTime() - periodLength);
+
+        // Query for current period sales grouped by day of week
+        const currentPeriodQuery = `
+            SELECT 
+                DAYOFWEEK(co.createdAt) as dayOfWeek,
+                DAYNAME(co.createdAt) as dayName,
+                COALESCE(SUM(coi.quantity), 0) as totalSold,
+                COALESCE(SUM(coi.subtotal), 0) as revenue
+            FROM customerorders co
+            INNER JOIN customerorderItems coi ON co.id = coi.orderId
+            WHERE co.createdAt >= :startDate 
+                AND co.createdAt <= :endDate
+                AND co.status = 'Shipped'
+                AND coi.productId = :productId
+            GROUP BY DAYOFWEEK(co.createdAt), DAYNAME(co.createdAt)
+            ORDER BY DAYOFWEEK(co.createdAt)
+        `;
+
+        // Query for previous period total sales
+        const previousPeriodQuery = `
+            SELECT 
+                COALESCE(SUM(coi.quantity), 0) as totalSold,
+                COALESCE(SUM(coi.subtotal), 0) as totalRevenue
+            FROM customerorders co
+            INNER JOIN customerorderItems coi ON co.id = coi.orderId
+            WHERE co.createdAt >= :prevStartDate 
+                AND co.createdAt <= :prevEndDate
+                AND co.status = 'Shipped'
+                AND coi.productId = :productId
+        `;
+
+        const [currentResults, previousResults] = await Promise.all([
+            sequelize.query(currentPeriodQuery, {
+                replacements: {
+                    startDate: start,
+                    endDate: end,
+                    productId: productId
+                },
+                type: sequelize.QueryTypes.SELECT
+            }),
+            sequelize.query(previousPeriodQuery, {
+                replacements: {
+                    prevStartDate: prevStart,
+                    prevEndDate: prevEnd,
+                    productId: productId
+                },
+                type: sequelize.QueryTypes.SELECT
+            })
+        ]);
+
+        // Create day mapping (MySQL DAYOFWEEK: 1=Sunday, 2=Monday, ..., 7=Saturday)
+        const dayMap = {
+            'Saturday': 0,   // dayOfWeek = 7
+            'Sunday': 0,     // dayOfWeek = 1
+            'Monday': 0,     // dayOfWeek = 2
+            'Tuesday': 0,    // dayOfWeek = 3
+            'Wednesday': 0,  // dayOfWeek = 4
+            'Thursday': 0,   // dayOfWeek = 5
+            'Friday': 0      // dayOfWeek = 6
+        };
+
+        // Fill in actual data
+        currentResults.forEach(row => {
+            dayMap[row.dayName] = parseInt(row.totalSold) || 0;
+        });
+
+        // Convert to array format for chart (SAT to FRI)
+        const chartData = [
+            { day: 'SAT', value: dayMap['Saturday'] },
+            { day: 'SUN', value: dayMap['Sunday'] },
+            { day: 'MON', value: dayMap['Monday'] },
+            { day: 'TUE', value: dayMap['Tuesday'] },
+            { day: 'WED', value: dayMap['Wednesday'] },
+            { day: 'THU', value: dayMap['Thursday'] },
+            { day: 'FRI', value: dayMap['Friday'] }
+        ];
+
+        // Calculate totals and growth
+        const currentPeriodTotal = Object.values(dayMap).reduce((sum, quantity) => sum + quantity, 0);
+        const previousPeriodTotal = parseInt(previousResults[0]?.totalSold || 0);
+
+        // Calculate growth percentage
+        let growth = 0;
+        if (previousPeriodTotal > 0) {
+            growth = Math.round(((currentPeriodTotal - previousPeriodTotal) / previousPeriodTotal) * 100);
+        } else if (currentPeriodTotal > 0) {
+            growth = 100;
+        }
+
+        // Calculate revenue for additional info
+        const currentRevenue = currentResults.reduce((sum, row) => sum + parseFloat(row.revenue || 0), 0);
+
+        return res.status(200).json({
+            product: {
+                productId: product.productId,
+                name: product.name,
+                currentStock: product.quantity
+            },
+            sales: {
+                totalSold: currentPeriodTotal,
+                revenue: Math.round(currentRevenue * 100) / 100,
+                growth: growth
+            },
+            data: chartData,
+            dateRange: {
+                start: start.toISOString().split('T')[0],
+                end: end.toISOString().split('T')[0]
+            }
+        });
+
+    } catch (error) {
+        console.error('Error getting product sales data:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+/**
+ * @desc    Get product sales overview for different time periods
+ * @route   GET /api/dashboard/product-sales/:productId/period
+ * @access  Admin
+ * @query   period (daily, weekly, monthly), count (number of periods)
+ */
+export const getProductSalesByPeriod = async (req, res) => {
+    try {
+        const { productId } = req.params;
+        const {
+            period = 'weekly', // daily, weekly, monthly
+            count = 1 // number of periods to look back
+        } = req.query;
+
+        // Validate product ID
+        if (!productId || isNaN(productId)) {
+            return res.status(400).json({ message: 'Valid product ID is required' });
+        }
+
+        // Check if product exists
+        const product = await productModel.findByPk(productId);
+        if (!product) {
+            return res.status(404).json({ message: 'Product not found' });
+        }
+
+        let startDate, endDate;
+        const now = new Date();
+
+        switch (period) {
+            case 'daily':
+                // Last N days
+                endDate = new Date(now);
+                startDate = new Date(now.getTime() - ((parseInt(count) - 1) * 24 * 60 * 60 * 1000));
+                break;
+
+            case 'weekly':
+                // Last N weeks (default)
+                endDate = new Date(now);
+                startDate = new Date(now.getTime() - ((parseInt(count) * 7 - 1) * 24 * 60 * 60 * 1000));
+                break;
+
+            case 'monthly':
+                // Last N months
+                endDate = new Date(now);
+                startDate = new Date(now);
+                startDate.setMonth(startDate.getMonth() - parseInt(count) + 1);
+                startDate.setDate(1); // First day of the month
+                break;
+
+            default:
+                return res.status(400).json({ message: 'Invalid period. Use: daily, weekly, or monthly' });
+        }
+
+        // Calculate previous period for comparison
+        const periodLength = endDate.getTime() - startDate.getTime();
+        const prevEndDate = new Date(startDate.getTime() - 1);
+        const prevStartDate = new Date(prevEndDate.getTime() - periodLength);
+
+        // Query for current period
+        const currentQuery = `
+            SELECT 
+                DAYOFWEEK(co.createdAt) as dayOfWeek,
+                DAYNAME(co.createdAt) as dayName,
+                COALESCE(SUM(coi.quantity), 0) as totalSold,
+                COALESCE(SUM(coi.subtotal), 0) as revenue
+            FROM customerorders co
+            INNER JOIN customerorderItems coi ON co.id = coi.orderId
+            WHERE co.createdAt >= :startDate 
+                AND co.createdAt <= :endDate
+                AND co.status = 'Shipped'
+                AND coi.productId = :productId
+            GROUP BY DAYOFWEEK(co.createdAt), DAYNAME(co.createdAt)
+            ORDER BY DAYOFWEEK(co.createdAt)
+        `;
+
+        // Query for previous period total
+        const previousQuery = `
+            SELECT 
+                COALESCE(SUM(coi.quantity), 0) as totalSold,
+                COALESCE(SUM(coi.subtotal), 0) as totalRevenue
+            FROM customerorders co
+            INNER JOIN customerorderItems coi ON co.id = coi.orderId
+            WHERE co.createdAt >= :prevStartDate 
+                AND co.createdAt <= :prevEndDate
+                AND co.status = 'Shipped'
+                AND coi.productId = :productId
+        `;
+
+        const [currentResults, previousResults] = await Promise.all([
+            sequelize.query(currentQuery, {
+                replacements: { startDate, endDate, productId },
+                type: sequelize.QueryTypes.SELECT
+            }),
+            sequelize.query(previousQuery, {
+                replacements: {
+                    prevStartDate,
+                    prevEndDate,
+                    productId
+                },
+                type: sequelize.QueryTypes.SELECT
+            })
+        ]);
+
+        // For weekly view, ensure all days are present
+        const dayMap = {
+            'Saturday': 0, 'Sunday': 0, 'Monday': 0, 'Tuesday': 0,
+            'Wednesday': 0, 'Thursday': 0, 'Friday': 0
+        };
+
+        currentResults.forEach(row => {
+            dayMap[row.dayName] = parseInt(row.totalSold) || 0;
+        });
+
+        const chartData = [
+            { day: 'SAT', value: dayMap['Saturday'] },
+            { day: 'SUN', value: dayMap['Sunday'] },
+            { day: 'MON', value: dayMap['Monday'] },
+            { day: 'TUE', value: dayMap['Tuesday'] },
+            { day: 'WED', value: dayMap['Wednesday'] },
+            { day: 'THU', value: dayMap['Thursday'] },
+            { day: 'FRI', value: dayMap['Friday'] }
+        ];
+
+        const currentTotal = Object.values(dayMap).reduce((sum, quantity) => sum + quantity, 0);
+        const previousTotal = parseInt(previousResults[0]?.totalSold || 0);
+        const currentRevenue = currentResults.reduce((sum, row) => sum + parseFloat(row.revenue || 0), 0);
+
+        let growth = 0;
+        if (previousTotal > 0) {
+            growth = Math.round(((currentTotal - previousTotal) / previousTotal) * 100);
+        } else if (currentTotal > 0) {
+            growth = 100;
+        }
+
+        return res.status(200).json({
+            product: {
+                productId: product.productId,
+                name: product.name,
+                currentStock: product.quantity
+            },
+            sales: {
+                totalSold: currentTotal,
+                revenue: Math.round(currentRevenue * 100) / 100,
+                growth: growth
+            },
+            data: chartData,
+            period: period,
+            dateRange: {
+                start: startDate.toISOString().split('T')[0],
+                end: endDate.toISOString().split('T')[0]
+            }
+        });
+
+    } catch (error) {
+        console.error('Error getting product sales data by period:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
