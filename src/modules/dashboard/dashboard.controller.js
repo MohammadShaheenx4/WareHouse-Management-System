@@ -1208,3 +1208,100 @@ export const getTopProducts = async (req, res) => {
         });
     }
 };
+/**
+ * @desc    Get order count by day of week
+ * @route   GET /api/dashboard/order-count
+ * @access  Admin
+ */
+export const getOrderCount = async (req, res) => {
+    try {
+        // Get current week data (last 7 days)
+        const endDate = new Date();
+        const startDate = new Date(endDate.getTime() - 6 * 24 * 60 * 60 * 1000);
+
+        // Get previous week data for comparison
+        const prevEndDate = new Date(startDate.getTime() - 1);
+        const prevStartDate = new Date(prevEndDate.getTime() - 6 * 24 * 60 * 60 * 1000);
+
+        // Query for current week
+        const currentWeekQuery = `
+            SELECT 
+                DAYNAME(createdAt) as dayName,
+                COUNT(*) as orderCount
+            FROM customerorders 
+            WHERE createdAt >= :startDate 
+                AND createdAt <= :endDate
+                AND status NOT IN ('Rejected')
+            GROUP BY DAYNAME(createdAt), DAYOFWEEK(createdAt)
+            ORDER BY DAYOFWEEK(createdAt)
+        `;
+
+        // Query for previous week
+        const previousWeekQuery = `
+            SELECT 
+                COUNT(*) as totalOrders
+            FROM customerorders 
+            WHERE createdAt >= :prevStartDate 
+                AND createdAt <= :prevEndDate
+                AND status NOT IN ('Rejected')
+        `;
+
+        const [currentWeekResults, previousWeekResults] = await Promise.all([
+            sequelize.query(currentWeekQuery, {
+                replacements: { startDate, endDate },
+                type: sequelize.QueryTypes.SELECT
+            }),
+            sequelize.query(previousWeekQuery, {
+                replacements: { prevStartDate, prevEndDate },
+                type: sequelize.QueryTypes.SELECT
+            })
+        ]);
+
+        // Create day mapping to ensure all days are present
+        const dayOrder = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const dayMap = {};
+
+        // Initialize with 0 for all days
+        dayOrder.forEach(day => {
+            dayMap[day] = 0;
+        });
+
+        // Fill in actual data
+        currentWeekResults.forEach(row => {
+            dayMap[row.dayName] = parseInt(row.orderCount);
+        });
+
+        // Convert to array format for chart
+        const chartData = [
+            { day: 'SAT', count: dayMap['Saturday'] },
+            { day: 'SUN', count: dayMap['Sunday'] },
+            { day: 'MON', count: dayMap['Monday'] },
+            { day: 'TUE', count: dayMap['Tuesday'] },
+            { day: 'WED', count: dayMap['Wednesday'] },
+            { day: 'THU', count: dayMap['Thursday'] },
+            { day: 'FRI', count: dayMap['Friday'] }
+        ];
+
+        // Calculate totals and growth
+        const currentWeekTotal = Object.values(dayMap).reduce((sum, count) => sum + count, 0);
+        const previousWeekTotal = parseInt(previousWeekResults[0]?.totalOrders || 0);
+
+        // Calculate growth percentage
+        let growth = 0;
+        if (previousWeekTotal > 0) {
+            growth = Math.round(((currentWeekTotal - previousWeekTotal) / previousWeekTotal) * 100);
+        } else if (currentWeekTotal > 0) {
+            growth = 100;
+        }
+
+        return res.status(200).json({
+            data: chartData,
+            growth: growth,
+            total: currentWeekTotal
+        });
+
+    } catch (error) {
+        console.error('Error getting order count:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};

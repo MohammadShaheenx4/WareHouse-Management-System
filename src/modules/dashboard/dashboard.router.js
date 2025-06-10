@@ -11,5 +11,7 @@ router.get('/top-customers', Auth.adminOnly, controller.getTopCustomers);
 router.get('/orders-overview', Auth.adminOnly, controller.getOrdersOverview);
 router.get('/orders-overview/weekly-pattern', Auth.adminOnly, controller.getWeeklyPattern);
 router.get('/top-products', Auth.adminOnly, controller.getTopProducts);
+router.get('/order-counts', Auth.adminOnly, controller.getOrderCount);
+
 
 export default router;
