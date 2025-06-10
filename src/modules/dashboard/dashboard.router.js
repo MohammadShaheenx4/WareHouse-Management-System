@@ -20,5 +20,8 @@ router.get('/profit-chart/period', Auth.adminOnly, controller.getProfitChartByPe
 router.get('/product-sales/:productId', Auth.adminOnly, controller.getProductSales);
 router.get('/product-sales/:productId/period', Auth.adminOnly, controller.getProductSalesByPeriod);
 router.get('/product-selling-history/:productId', Auth.adminOnly, controller.getProductSellingHistory);
+router.get('/tracking-cards', Auth.adminOnly, controller.getTrackingCards);
+router.get('/tracking-orders', Auth.adminOnly, controller.getTrackingOrders);
+router.get('/tracking-orders/detailed', Auth.adminOnly, controller.getDetailedTracking);
 
 export default router;

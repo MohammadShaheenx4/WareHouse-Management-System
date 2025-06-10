@@ -2354,3 +2354,709 @@ export const getProductSellingHistory = async (req, res) => {
 };
 
 
+/**
+ * @desc    Get tracking cards data (Total Shipment, Completed, Pending)
+ * @route   GET /api/dashboard/tracking-cards
+ * @access  Admin
+ */
+export const getTrackingCards = async (req, res) => {
+    try {
+        // Query to get counts for different order statuses
+        const trackingQuery = `
+            SELECT 
+                status,
+                COUNT(*) as count
+            FROM customerorders
+            WHERE status IN ('on_theway', 'Shipped')
+            GROUP BY status
+        `;
+
+        const results = await sequelize.query(trackingQuery, {
+            type: sequelize.QueryTypes.SELECT
+        });
+
+        // Initialize counts
+        let pendingCount = 0;    // on_theway status
+        let completedCount = 0;  // Shipped status
+
+        // Process results
+        results.forEach(row => {
+            if (row.status === 'on_theway') {
+                pendingCount = parseInt(row.count);
+            } else if (row.status === 'Shipped') {
+                completedCount = parseInt(row.count);
+            }
+        });
+
+        // Calculate total shipment (on_theway + Shipped)
+        const totalShipment = pendingCount + completedCount;
+
+        return res.status(200).json({
+            totalShipment: totalShipment,
+            completed: completedCount,
+            pending: pendingCount
+        });
+
+    } catch (error) {
+        console.error('Error getting tracking cards data:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+/**
+ * @desc    Get all orders on the way with customer and delivery locations
+ * @route   GET /api/dashboard/tracking-orders
+ * @access  Admin
+ * @query   page, limit (optional pagination)
+ */
+export const getTrackingOrders = async (req, res) => {
+    try {
+        const { page, limit } = req.query;
+
+        // Build pagination if provided
+        let limitClause = '';
+        let offsetClause = '';
+        if (page && limit) {
+            const offset = (parseInt(page) - 1) * parseInt(limit);
+            limitClause = `LIMIT ${parseInt(limit)}`;
+            offsetClause = `OFFSET ${offset}`;
+        }
+
+        // Query to get all on_theway orders with location data
+        const ordersQuery = `
+            SELECT 
+                co.id as orderId,
+                co.totalCost,
+                co.createdAt as orderDate,
+                co.status,
+                co.note as orderNote,
+                co.paymentMethod,
+                co.amountPaid,
+                
+                -- Customer Info
+                c.id as customerId,
+                c.address as customerAddress,
+                c.latitude as customerLatitude,
+                c.longitude as customerLongitude,
+                u.name as customerName,
+                u.email as customerEmail,
+                u.phoneNumber as customerPhone,
+                
+                -- Delivery Info (assuming delivery address is same as customer address for now)
+                c.address as deliveryAddress,
+                c.latitude as deliveryLatitude,
+                c.longitude as deliveryLongitude
+                
+            FROM customerorders co
+            INNER JOIN customers c ON co.customerId = c.id
+            INNER JOIN user u ON c.userId = u.userId
+            WHERE co.status = 'on_theway'
+            ORDER BY co.createdAt DESC
+            ${limitClause} ${offsetClause}
+        `;
+
+        // Query to get order items for each order
+        const orderItemsQuery = `
+            SELECT 
+                coi.orderId,
+                coi.quantity,
+                coi.Price,
+                coi.subtotal,
+                p.productId,
+                p.name as productName,
+                p.image as productImage
+            FROM customerorderItems coi
+            INNER JOIN product p ON coi.productId = p.productId
+            INNER JOIN customerorders co ON coi.orderId = co.id
+            WHERE co.status = 'on_theway'
+            ORDER BY coi.orderId, p.name
+        `;
+
+        // Query for total count (for pagination)
+        const countQuery = `
+            SELECT COUNT(*) as total
+            FROM customerorders co
+            WHERE co.status = 'on_theway'
+        `;
+
+        const [ordersResults, itemsResults, countResults] = await Promise.all([
+            sequelize.query(ordersQuery, {
+                type: sequelize.QueryTypes.SELECT
+            }),
+            sequelize.query(orderItemsQuery, {
+                type: sequelize.QueryTypes.SELECT
+            }),
+            sequelize.query(countQuery, {
+                type: sequelize.QueryTypes.SELECT
+            })
+        ]);
+
+        const totalOrders = parseInt(countResults[0].total) || 0;
+
+        // Group order items by orderId
+        const itemsByOrder = {};
+        itemsResults.forEach(item => {
+            if (!itemsByOrder[item.orderId]) {
+                itemsByOrder[item.orderId] = [];
+            }
+            itemsByOrder[item.orderId].push({
+                productId: item.productId,
+                productName: item.productName,
+                quantity: item.quantity,
+                price: parseFloat(item.Price),
+                subtotal: parseFloat(item.subtotal),
+                image: item.productImage
+            });
+        });
+
+        // Format the response
+        const trackingOrders = ordersResults.map(order => {
+            const orderItems = itemsByOrder[order.orderId] || [];
+            const totalItems = orderItems.reduce((sum, item) => sum + item.quantity, 0);
+
+            return {
+                orderId: order.orderId,
+                orderInfo: {
+                    totalCost: parseFloat(order.totalCost),
+                    orderDate: order.orderDate,
+                    status: order.status,
+                    paymentMethod: order.paymentMethod,
+                    amountPaid: parseFloat(order.amountPaid),
+                    note: order.orderNote,
+                    totalItems: totalItems,
+                    itemsCount: orderItems.length
+                },
+                customer: {
+                    customerId: order.customerId,
+                    name: order.customerName,
+                    email: order.customerEmail,
+                    phone: order.customerPhone,
+                    address: order.customerAddress
+                },
+                customerLocation: {
+                    latitude: parseFloat(order.customerLatitude) || null,
+                    longitude: parseFloat(order.customerLongitude) || null,
+                    address: order.customerAddress
+                },
+                deliveryLocation: {
+                    latitude: parseFloat(order.deliveryLatitude) || null,
+                    longitude: parseFloat(order.deliveryLongitude) || null,
+                    address: order.deliveryAddress
+                },
+                deliverySummary: {
+                    destination: order.deliveryAddress,
+                    customerContact: order.customerPhone,
+                    orderValue: parseFloat(order.totalCost),
+                    paymentStatus: order.amountPaid >= order.totalCost ? 'Paid' : 'Pending',
+                    remainingAmount: Math.max(0, order.totalCost - order.amountPaid),
+                    estimatedItems: totalItems,
+                    specialInstructions: order.orderNote || 'No special instructions'
+                },
+                items: orderItems
+            };
+        });
+
+        return res.status(200).json({
+            message: 'Tracking orders retrieved successfully',
+            totalOrders: totalOrders,
+            orders: trackingOrders,
+            pagination: page && limit ? {
+                currentPage: parseInt(page),
+                limit: parseInt(limit),
+                totalItems: totalOrders,
+                totalPages: Math.ceil(totalOrders / parseInt(limit)),
+                hasNextPage: parseInt(page) * parseInt(limit) < totalOrders,
+                hasPreviousPage: parseInt(page) > 1
+            } : null
+        });
+
+    } catch (error) {
+        console.error('Error getting tracking orders:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+/**
+ * @desc    Get comprehensive detailed tracking for all on_theway orders
+ * @route   GET /api/dashboard/tracking-orders/detailed
+ * @access  Admin
+ * @query   page, limit, includeItems (true/false)
+ */
+export const getDetailedTracking = async (req, res) => {
+    try {
+        const { page, limit, includeItems = 'true' } = req.query;
+
+        // Build pagination if provided
+        let limitClause = '';
+        let offsetClause = '';
+        if (page && limit) {
+            const offset = (parseInt(page) - 1) * parseInt(limit);
+            limitClause = `LIMIT ${parseInt(limit)}`;
+            offsetClause = `OFFSET ${offset}`;
+        }
+
+        // Main query for comprehensive order tracking data
+        const trackingQuery = `
+            SELECT 
+                -- Order Core Information
+                co.id as orderId,
+                co.totalCost,
+                co.createdAt as orderCreatedDate,
+                co.updatedAt as orderLastUpdated,
+                co.status as currentStatus,
+                co.note as orderNotes,
+                co.paymentMethod,
+                co.amountPaid,
+                co.discount,
+                
+                -- Order Timing
+                co.deliveryStartTime,
+                co.deliveryEndTime,
+                co.estimatedDeliveryTime,
+                
+                -- Customer Core Information
+                c.id as customerId,
+                c.address as customerAddress,
+                c.latitude as customerLatitude,
+                c.longitude as customerLongitude,
+                c.accountBalance as customerAccountBalance,
+                
+                -- Customer User Information
+                u.userId,
+                u.name as customerName,
+                u.email as customerEmail,
+                u.phoneNumber as customerPhone,
+                u.registrationDate as customerRegistrationDate,
+                u.isActive as customerActiveStatus,
+                
+                -- Delivery Location (assuming same as customer for now)
+                c.address as deliveryAddress,
+                c.latitude as deliveryLatitude,
+                c.longitude as deliveryLongitude,
+                
+                -- Calculate order age in minutes
+                TIMESTAMPDIFF(MINUTE, co.createdAt, NOW()) as orderAgeMinutes,
+                
+                -- Calculate estimated delivery time remaining
+                CASE 
+                    WHEN co.estimatedDeliveryTime IS NOT NULL 
+                    THEN TIMESTAMPDIFF(MINUTE, NOW(), co.estimatedDeliveryTime)
+                    ELSE NULL 
+                END as estimatedMinutesRemaining
+                
+            FROM customerorders co
+            INNER JOIN customers c ON co.customerId = c.id
+            INNER JOIN user u ON c.userId = u.userId
+            WHERE co.status = 'on_theway'
+            ORDER BY co.createdAt DESC
+            ${limitClause} ${offsetClause}
+        `;
+
+        // Query for order items with full product details
+        const orderItemsQuery = `
+            SELECT 
+                coi.orderId,
+                coi.quantity,
+                coi.Price as itemPrice,
+                coi.subtotal,
+                
+                -- Product Details
+                p.productId,
+                p.name as productName,
+                p.costPrice as productCostPrice,
+                p.sellPrice as productSellPrice,
+                p.quantity as productStockRemaining,
+                p.barcode as productBarcode,
+                p.image as productImage,
+                p.description as productDescription,
+                p.warranty as productWarranty,
+                
+                -- Category Information
+                cat.categoryID,
+                cat.categoryName,
+                
+                -- Calculate profit per item
+                (coi.Price - p.costPrice) * coi.quantity as itemProfit
+                
+            FROM customerorderItems coi
+            INNER JOIN product p ON coi.productId = p.productId
+            LEFT JOIN category cat ON p.categoryId = cat.categoryID
+            INNER JOIN customerorders co ON coi.orderId = co.id
+            WHERE co.status = 'on_theway'
+            ORDER BY coi.orderId, p.name
+        `;
+
+        // Query for order status history/timeline
+        const statusHistoryQuery = `
+            SELECT 
+                co.id as orderId,
+                co.createdAt as orderPlaced,
+                co.updatedAt as lastStatusChange,
+                co.deliveryStartTime,
+                co.deliveryEndTime,
+                co.status
+            FROM customerorders co
+            WHERE co.status = 'on_theway'
+        `;
+
+        // Query for delivery statistics and insights
+        const deliveryStatsQuery = `
+            SELECT 
+                COUNT(*) as totalOnTheWayOrders,
+                AVG(co.totalCost) as averageOrderValue,
+                SUM(co.totalCost) as totalValueInTransit,
+                MIN(co.createdAt) as oldestOrderDate,
+                MAX(co.createdAt) as newestOrderDate,
+                
+                -- Payment method breakdown
+                SUM(CASE WHEN co.paymentMethod = 'cash' THEN 1 ELSE 0 END) as cashOrders,
+                SUM(CASE WHEN co.paymentMethod = 'debt' THEN 1 ELSE 0 END) as debtOrders,
+                SUM(CASE WHEN co.paymentMethod = 'partial' THEN 1 ELSE 0 END) as partialOrders,
+                
+                -- Payment status
+                SUM(CASE WHEN co.amountPaid >= co.totalCost THEN 1 ELSE 0 END) as fullyPaidOrders,
+                SUM(CASE WHEN co.amountPaid < co.totalCost THEN 1 ELSE 0 END) as partiallyPaidOrders,
+                SUM(co.totalCost - co.amountPaid) as totalOutstandingAmount
+                
+            FROM customerorders co
+            WHERE co.status = 'on_theway'
+        `;
+
+        // Query for geographic distribution
+        const geographicQuery = `
+            SELECT 
+                c.address,
+                c.latitude,
+                c.longitude,
+                COUNT(*) as ordersInArea,
+                SUM(co.totalCost) as totalValueInArea
+            FROM customerorders co
+            INNER JOIN customers c ON co.customerId = c.id
+            WHERE co.status = 'on_theway'
+            GROUP BY c.address, c.latitude, c.longitude
+            ORDER BY ordersInArea DESC
+        `;
+
+        const [
+            trackingResults,
+            itemsResults,
+            historyResults,
+            statsResults,
+            geoResults
+        ] = await Promise.all([
+            sequelize.query(trackingQuery, { type: sequelize.QueryTypes.SELECT }),
+            includeItems === 'true' ? sequelize.query(orderItemsQuery, { type: sequelize.QueryTypes.SELECT }) : Promise.resolve([]),
+            sequelize.query(statusHistoryQuery, { type: sequelize.QueryTypes.SELECT }),
+            sequelize.query(deliveryStatsQuery, { type: sequelize.QueryTypes.SELECT }),
+            sequelize.query(geographicQuery, { type: sequelize.QueryTypes.SELECT })
+        ]);
+
+        const deliveryStats = statsResults[0] || {};
+
+        // Group order items by orderId
+        const itemsByOrder = {};
+        if (includeItems === 'true') {
+            itemsResults.forEach(item => {
+                if (!itemsByOrder[item.orderId]) {
+                    itemsByOrder[item.orderId] = [];
+                }
+                itemsByOrder[item.orderId].push({
+                    productId: item.productId,
+                    productName: item.productName,
+                    productBarcode: item.productBarcode,
+                    quantity: item.quantity,
+                    itemPrice: parseFloat(item.itemPrice),
+                    subtotal: parseFloat(item.subtotal),
+                    productDetails: {
+                        costPrice: parseFloat(item.productCostPrice),
+                        sellPrice: parseFloat(item.productSellPrice),
+                        stockRemaining: item.productStockRemaining,
+                        image: item.productImage,
+                        description: item.productDescription,
+                        warranty: item.productWarranty,
+                        category: {
+                            id: item.categoryID || null,
+                            name: item.categoryName || 'Uncategorized'
+                        }
+                    },
+                    profitMargin: parseFloat(item.itemProfit) || 0
+                });
+            });
+        }
+
+        // Group history by orderId
+        const historyByOrder = {};
+        historyResults.forEach(history => {
+            historyByOrder[history.orderId] = {
+                timeline: {
+                    orderPlaced: history.orderPlaced,
+                    lastStatusChange: history.lastStatusChange,
+                    deliveryStarted: history.deliveryStartTime,
+                    expectedDelivery: history.deliveryEndTime
+                }
+            };
+        });
+
+        // Format comprehensive tracking data
+        const detailedTracking = trackingResults.map(order => {
+            const orderItems = itemsByOrder[order.orderId] || [];
+            const orderHistory = historyByOrder[order.orderId] || {};
+
+            // Calculate comprehensive order metrics
+            const totalItems = orderItems.reduce((sum, item) => sum + item.quantity, 0);
+            const totalProfit = orderItems.reduce((sum, item) => sum + item.profitMargin, 0);
+            const averageItemValue = totalItems > 0 ? order.totalCost / totalItems : 0;
+            const paymentStatus = order.amountPaid >= order.totalCost ? 'Fully Paid' : 'Partial Payment';
+            const remainingAmount = Math.max(0, order.totalCost - order.amountPaid);
+
+            // Calculate delivery urgency
+            const urgencyLevel = order.orderAgeMinutes > 180 ? 'High' :
+                order.orderAgeMinutes > 60 ? 'Medium' : 'Low';
+
+            return {
+                // Core Order Information
+                orderId: order.orderId,
+                orderMetrics: {
+                    totalValue: parseFloat(order.totalCost),
+                    amountPaid: parseFloat(order.amountPaid),
+                    remainingAmount: parseFloat(remainingAmount),
+                    discount: parseFloat(order.discount) || 0,
+                    totalItems: totalItems,
+                    uniqueProducts: orderItems.length,
+                    averageItemValue: parseFloat(averageItemValue.toFixed(2)),
+                    totalProfit: parseFloat(totalProfit.toFixed(2)),
+                    profitMargin: order.totalCost > 0 ? parseFloat(((totalProfit / order.totalCost) * 100).toFixed(2)) : 0
+                },
+
+                // Order Status & Timing
+                orderStatus: {
+                    current: order.currentStatus,
+                    orderAge: {
+                        minutes: order.orderAgeMinutes,
+                        hours: parseFloat((order.orderAgeMinutes / 60).toFixed(1)),
+                        formatted: formatDuration(order.orderAgeMinutes)
+                    },
+                    urgencyLevel: urgencyLevel,
+                    estimatedDelivery: {
+                        timeRemaining: null,
+                        formattedTimeRemaining: 'Not specified',
+                        isOverdue: false
+                    }
+                },
+
+                // Payment Information
+                paymentDetails: {
+                    method: order.paymentMethod,
+                    status: paymentStatus,
+                    amountPaid: parseFloat(order.amountPaid),
+                    totalCost: parseFloat(order.totalCost),
+                    remainingAmount: parseFloat(remainingAmount),
+                    paymentPercentage: parseFloat(((order.amountPaid / order.totalCost) * 100).toFixed(1))
+                },
+
+                // Customer Information
+                customer: {
+                    customerId: order.customerId,
+                    userId: order.userId,
+                    personalInfo: {
+                        name: order.customerName,
+                        email: order.customerEmail,
+                        phone: order.customerPhone,
+                        role: 'customer' // Default role since all customers have this role
+                    },
+                    accountInfo: {
+                        accountBalance: parseFloat(order.customerAccountBalance) || 0,
+                        registrationDate: order.customerRegistrationDate,
+                        isActive: order.customerActiveStatus === 'Active'
+                    },
+                    deliveryAddress: {
+                        fullAddress: order.customerAddress,
+                        coordinates: {
+                            latitude: parseFloat(order.customerLatitude) || null,
+                            longitude: parseFloat(order.customerLongitude) || null,
+                            hasValidCoordinates: !!(order.customerLatitude && order.customerLongitude)
+                        }
+                    }
+                },
+
+                // Location Data for Tracking
+                locationData: {
+                    customerLocation: {
+                        latitude: parseFloat(order.customerLatitude) || null,
+                        longitude: parseFloat(order.customerLongitude) || null,
+                        address: order.customerAddress,
+                        addressType: 'Customer Address'
+                    },
+                    deliveryLocation: {
+                        latitude: parseFloat(order.deliveryLatitude) || null,
+                        longitude: parseFloat(order.deliveryLongitude) || null,
+                        address: order.deliveryAddress,
+                        addressType: 'Delivery Address'
+                    },
+                    sameLocation: order.customerAddress === order.deliveryAddress
+                },
+
+                // Comprehensive Delivery Summary
+                deliverySummary: {
+                    destination: {
+                        address: order.deliveryAddress,
+                        coordinates: {
+                            lat: parseFloat(order.deliveryLatitude) || null,
+                            lng: parseFloat(order.deliveryLongitude) || null
+                        }
+                    },
+                    contactInfo: {
+                        primaryContact: order.customerName,
+                        phoneNumber: order.customerPhone,
+                        email: order.customerEmail,
+                        preferredContactMethod: 'Phone' // Could be dynamic based on customer preference
+                    },
+                    orderDetails: {
+                        orderValue: parseFloat(order.totalCost),
+                        formattedValue: `$${parseFloat(order.totalCost).toFixed(2)}`,
+                        paymentStatus: paymentStatus,
+                        paymentMethod: order.paymentMethod,
+                        cashOnDelivery: remainingAmount > 0 ? parseFloat(remainingAmount.toFixed(2)) : 0,
+                        totalItems: totalItems,
+                        productCategories: [...new Set(orderItems.map(item => item.productDetails.category.name))],
+                        specialInstructions: order.orderNotes || 'No special instructions',
+                        urgency: urgencyLevel
+                    },
+                    deliveryInstructions: {
+                        notes: order.orderNotes || 'Standard delivery',
+                        paymentInstructions: remainingAmount > 0 ?
+                            `Collect $${remainingAmount.toFixed(2)} cash on delivery` :
+                            'Order fully paid - no collection required',
+                        contactInstructions: `Contact ${order.customerName} at ${order.customerPhone}`,
+                        addressInstructions: order.customerAddress
+                    }
+                },
+
+                // Order Timeline
+                timeline: {
+                    orderPlaced: order.orderCreatedDate,
+                    lastUpdated: order.orderLastUpdated,
+                    deliveryStarted: order.deliveryStartTime,
+                    estimatedCompletion: order.deliveryEndTime,
+                    ...orderHistory.timeline
+                },
+
+                // Order Items (if requested)
+                items: includeItems === 'true' ? orderItems : undefined,
+
+                // Additional Metadata
+                metadata: {
+                    dataGeneratedAt: new Date().toISOString(),
+                    orderAgeCategory: urgencyLevel,
+                    requiresAttention: urgencyLevel === 'High' || remainingAmount > 100,
+                    estimatedDeliveryStatus: 'On Time'
+                }
+            };
+        });
+
+        // Calculate route optimization suggestions
+        const routeOptimization = calculateRouteOptimization(geoResults);
+
+        return res.status(200).json({
+            message: 'Comprehensive tracking data retrieved successfully',
+            summary: {
+                totalOrders: detailedTracking.length,
+                totalValueInTransit: parseFloat(deliveryStats.totalValueInTransit) || 0,
+                averageOrderValue: parseFloat(deliveryStats.averageOrderValue) || 0,
+                paymentBreakdown: {
+                    cash: parseInt(deliveryStats.cashOrders) || 0,
+                    debt: parseInt(deliveryStats.debtOrders) || 0,
+                    partial: parseInt(deliveryStats.partialOrders) || 0
+                },
+                urgencyBreakdown: calculateUrgencyBreakdown(detailedTracking),
+                geographicDistribution: geoResults.length,
+                outstandingPayments: parseFloat(deliveryStats.totalOutstandingAmount) || 0
+            },
+            orders: detailedTracking,
+            geographicDistribution: geoResults.map(geo => ({
+                address: geo.address,
+                coordinates: {
+                    lat: parseFloat(geo.latitude) || null,
+                    lng: parseFloat(geo.longitude) || null
+                },
+                ordersCount: parseInt(geo.ordersInArea),
+                totalValue: parseFloat(geo.totalValueInArea)
+            })),
+            routeOptimization: routeOptimization,
+            pagination: page && limit ? {
+                currentPage: parseInt(page),
+                limit: parseInt(limit),
+                totalItems: parseInt(deliveryStats.totalOnTheWayOrders) || 0,
+                totalPages: Math.ceil((parseInt(deliveryStats.totalOnTheWayOrders) || 0) / parseInt(limit)),
+                hasNextPage: parseInt(page) * parseInt(limit) < (parseInt(deliveryStats.totalOnTheWayOrders) || 0),
+                hasPreviousPage: parseInt(page) > 1
+            } : null,
+            metadata: {
+                includeItems: includeItems === 'true',
+                generatedAt: new Date().toISOString(),
+                responseTime: Date.now()
+            }
+        });
+
+    } catch (error) {
+        console.error('Error getting detailed tracking:', error);
+        return res.status(500).json({
+            message: 'Internal server error',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+};
+
+// Helper Functions
+
+/**
+ * Format duration in minutes to human readable format
+ */
+const formatDuration = (minutes) => {
+    if (minutes < 60) {
+        return `${minutes} minutes`;
+    } else if (minutes < 1440) {
+        const hours = Math.floor(minutes / 60);
+        const remainingMinutes = minutes % 60;
+        return remainingMinutes > 0 ?
+            `${hours}h ${remainingMinutes}m` :
+            `${hours} hours`;
+    } else {
+        const days = Math.floor(minutes / 1440);
+        const remainingHours = Math.floor((minutes % 1440) / 60);
+        return remainingHours > 0 ?
+            `${days}d ${remainingHours}h` :
+            `${days} days`;
+    }
+};
+
+/**
+ * Calculate urgency breakdown
+ */
+const calculateUrgencyBreakdown = (orders) => {
+    return orders.reduce((acc, order) => {
+        const urgency = order.orderStatus.urgencyLevel;
+        acc[urgency.toLowerCase()] = (acc[urgency.toLowerCase()] || 0) + 1;
+        return acc;
+    }, { high: 0, medium: 0, low: 0 });
+};
+
+/**
+ * Calculate route optimization suggestions
+ */
+const calculateRouteOptimization = (geoData) => {
+    const clusters = geoData.filter(geo => geo.ordersInArea > 1);
+    return {
+        clusteredDeliveries: clusters.length,
+        suggestedRoutes: clusters.map(cluster => ({
+            area: cluster.address,
+            ordersCount: parseInt(cluster.ordersInArea),
+            totalValue: parseFloat(cluster.totalValueInArea),
+            coordinates: {
+                lat: parseFloat(cluster.latitude),
+                lng: parseFloat(cluster.longitude)
+            },
+            priority: cluster.ordersInArea > 3 ? 'High' : 'Medium'
+        }))
+    };
+};
