@@ -590,3 +590,621 @@ const getCustomerSegment = (orderCount, totalSpent, daysSinceLastOrder) => {
     // Low-value customers
     return daysSinceLastOrder < 90 ? 'Occasional' : 'Dormant';
 };
+// ========================================
+// ADD THESE METHODS TO YOUR EXISTING dashboard.controller.js
+// ========================================
+
+/**
+ * @desc    Get orders overview with time series data
+ * @route   GET /api/dashboard/orders-overview
+ * @access  Admin
+ */
+export const getOrdersOverview = async (req, res) => {
+    try {
+        const {
+            period = 'weekly', // daily, weekly, monthly, yearly
+            startDate,
+            endDate,
+            metric = 'revenue' // revenue, orders, avgOrderValue
+        } = req.query;
+
+        // Calculate date ranges based on period
+        const dateRanges = calculateDateRanges(period, startDate, endDate);
+
+        // Get time series data based on the period
+        let timeSeriesData = [];
+        let comparisonData = null;
+        let summary = {};
+
+        switch (period) {
+            case 'daily':
+                timeSeriesData = await getDailyData(dateRanges.current, metric);
+                comparisonData = await getDailyData(dateRanges.previous, metric);
+                break;
+            case 'weekly':
+                timeSeriesData = await getWeeklyData(dateRanges.current, metric);
+                comparisonData = await getWeeklyData(dateRanges.previous, metric);
+                break;
+            case 'monthly':
+                timeSeriesData = await getMonthlyData(dateRanges.current, metric);
+                comparisonData = await getMonthlyData(dateRanges.previous, metric);
+                break;
+            case 'yearly':
+                timeSeriesData = await getYearlyData(dateRanges.current, metric);
+                comparisonData = await getYearlyData(dateRanges.previous, metric);
+                break;
+            default:
+                return res.status(400).json({ message: 'Invalid period specified' });
+        }
+
+        // Calculate summary statistics
+        summary = calculateSummary(timeSeriesData, comparisonData, metric);
+
+        return res.status(200).json({
+            message: 'Orders overview retrieved successfully',
+            period: period,
+            metric: metric,
+            dateRange: {
+                start: dateRanges.current.start,
+                end: dateRanges.current.end
+            },
+            summary: summary,
+            data: timeSeriesData,
+            comparison: comparisonData,
+            insights: generateInsights(timeSeriesData, summary)
+        });
+
+    } catch (error) {
+        console.error('Error getting orders overview:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+/**
+ * @desc    Get orders overview by day of week (for weekly patterns)
+ * @route   GET /api/dashboard/orders-overview/weekly-pattern
+ * @access  Admin
+ */
+export const getWeeklyPattern = async (req, res) => {
+    try {
+        const { weeks = 4, metric = 'revenue' } = req.query;
+
+        // Get data for the last N weeks
+        const endDate = new Date();
+        const startDate = new Date(endDate.getTime() - (weeks * 7 * 24 * 60 * 60 * 1000));
+
+        const query = `
+            SELECT 
+                DAYOFWEEK(createdAt) as dayOfWeek,
+                DAYNAME(createdAt) as dayName,
+                COUNT(*) as orderCount,
+                COALESCE(SUM(totalCost), 0) as totalRevenue,
+                COALESCE(AVG(totalCost), 0) as avgOrderValue
+            FROM customerorders 
+            WHERE createdAt >= :startDate 
+                AND createdAt <= :endDate
+                AND status NOT IN ('Rejected')
+            GROUP BY DAYOFWEEK(createdAt), DAYNAME(createdAt)
+            ORDER BY DAYOFWEEK(createdAt)
+        `;
+
+        const results = await sequelize.query(query, {
+            replacements: { startDate, endDate },
+            type: sequelize.QueryTypes.SELECT
+        });
+
+        const weeklyPattern = results.map(row => ({
+            dayOfWeek: row.dayOfWeek,
+            dayName: row.dayName,
+            orderCount: parseInt(row.orderCount),
+            revenue: Math.round(parseFloat(row.totalRevenue) * 100) / 100,
+            avgOrderValue: Math.round(parseFloat(row.avgOrderValue) * 100) / 100,
+            value: getMetricValue(row, metric)
+        }));
+
+        // Find best and worst days
+        const bestDay = weeklyPattern.reduce((max, day) => day.value > max.value ? day : max);
+        const worstDay = weeklyPattern.reduce((min, day) => day.value < min.value ? day : min);
+
+        return res.status(200).json({
+            message: 'Weekly pattern retrieved successfully',
+            period: `Last ${weeks} weeks`,
+            metric: metric,
+            data: weeklyPattern,
+            insights: {
+                bestDay: bestDay.dayName,
+                worstDay: worstDay.dayName,
+                weekendPerformance: calculateWeekendPerformance(weeklyPattern),
+                recommendations: generateWeeklyRecommendations(weeklyPattern)
+            }
+        });
+
+    } catch (error) {
+        console.error('Error getting weekly pattern:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// ========================================
+// HELPER FUNCTIONS (ADD THESE TOO)
+// ========================================
+
+/**
+ * Calculate date ranges for current and previous periods
+ */
+const calculateDateRanges = (period, startDate, endDate) => {
+    const now = new Date();
+    let current = { start: null, end: null };
+    let previous = { start: null, end: null };
+
+    if (startDate && endDate) {
+        // Custom date range
+        current.start = new Date(startDate);
+        current.end = new Date(endDate);
+
+        const diff = current.end.getTime() - current.start.getTime();
+        previous.end = new Date(current.start.getTime() - 1);
+        previous.start = new Date(previous.end.getTime() - diff);
+    } else {
+        // Predefined periods
+        switch (period) {
+            case 'daily':
+                // Last 7 days
+                current.end = new Date(now);
+                current.start = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
+                previous.end = new Date(current.start.getTime() - 1);
+                previous.start = new Date(previous.end.getTime() - 6 * 24 * 60 * 60 * 1000);
+                break;
+
+            case 'weekly':
+                // Last 7 days (current week)
+                current.end = new Date(now);
+                current.start = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
+                previous.end = new Date(current.start.getTime() - 1);
+                previous.start = new Date(previous.end.getTime() - 6 * 24 * 60 * 60 * 1000);
+                break;
+
+            case 'monthly':
+                // Last 30 days
+                current.end = new Date(now);
+                current.start = new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000);
+                previous.end = new Date(current.start.getTime() - 1);
+                previous.start = new Date(previous.end.getTime() - 29 * 24 * 60 * 60 * 1000);
+                break;
+
+            case 'yearly':
+                // Last 12 months
+                current.end = new Date(now);
+                current.start = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+                previous.end = new Date(current.start.getTime() - 1);
+                previous.start = new Date(previous.end.getFullYear(), previous.end.getMonth() - 11, 1);
+                break;
+        }
+    }
+
+    return { current, previous };
+};
+
+/**
+ * Get daily data aggregated by day
+ */
+const getDailyData = async (dateRange, metric) => {
+    const query = `
+        SELECT 
+            DATE(createdAt) as date,
+            DAYNAME(createdAt) as dayName,
+            COUNT(*) as orderCount,
+            COALESCE(SUM(totalCost), 0) as totalRevenue,
+            COALESCE(AVG(totalCost), 0) as avgOrderValue
+        FROM customerorders 
+        WHERE createdAt >= :startDate 
+            AND createdAt <= :endDate
+            AND status NOT IN ('Rejected')
+        GROUP BY DATE(createdAt), DAYNAME(createdAt)
+        ORDER BY DATE(createdAt)
+    `;
+
+    const results = await sequelize.query(query, {
+        replacements: {
+            startDate: dateRange.start,
+            endDate: dateRange.end
+        },
+        type: sequelize.QueryTypes.SELECT
+    });
+
+    return results.map(row => ({
+        date: row.date,
+        label: row.dayName,
+        orderCount: parseInt(row.orderCount),
+        revenue: Math.round(parseFloat(row.totalRevenue) * 100) / 100,
+        avgOrderValue: Math.round(parseFloat(row.avgOrderValue) * 100) / 100,
+        value: getMetricValue(row, metric)
+    }));
+};
+
+/**
+ * Get weekly data (same as daily for weekly view)
+ */
+const getWeeklyData = async (dateRange, metric) => {
+    return await getDailyData(dateRange, metric);
+};
+
+/**
+ * Get monthly data aggregated by month
+ */
+const getMonthlyData = async (dateRange, metric) => {
+    const query = `
+        SELECT 
+            DATE_FORMAT(createdAt, '%Y-%m') as month,
+            DATE_FORMAT(createdAt, '%M %Y') as monthName,
+            COUNT(*) as orderCount,
+            COALESCE(SUM(totalCost), 0) as totalRevenue,
+            COALESCE(AVG(totalCost), 0) as avgOrderValue
+        FROM customerorders 
+        WHERE createdAt >= :startDate 
+            AND createdAt <= :endDate
+            AND status NOT IN ('Rejected')
+        GROUP BY DATE_FORMAT(createdAt, '%Y-%m')
+        ORDER BY month
+    `;
+
+    const results = await sequelize.query(query, {
+        replacements: {
+            startDate: dateRange.start,
+            endDate: dateRange.end
+        },
+        type: sequelize.QueryTypes.SELECT
+    });
+
+    return results.map(row => ({
+        date: row.month,
+        label: row.monthName,
+        orderCount: parseInt(row.orderCount),
+        revenue: Math.round(parseFloat(row.totalRevenue) * 100) / 100,
+        avgOrderValue: Math.round(parseFloat(row.avgOrderValue) * 100) / 100,
+        value: getMetricValue(row, metric)
+    }));
+};
+
+/**
+ * Get yearly data aggregated by year
+ */
+const getYearlyData = async (dateRange, metric) => {
+    const query = `
+        SELECT 
+            YEAR(createdAt) as year,
+            COUNT(*) as orderCount,
+            COALESCE(SUM(totalCost), 0) as totalRevenue,
+            COALESCE(AVG(totalCost), 0) as avgOrderValue
+        FROM customerorders 
+        WHERE createdAt >= :startDate 
+            AND createdAt <= :endDate
+            AND status NOT IN ('Rejected')
+        GROUP BY YEAR(createdAt)
+        ORDER BY year
+    `;
+
+    const results = await sequelize.query(query, {
+        replacements: {
+            startDate: dateRange.start,
+            endDate: dateRange.end
+        },
+        type: sequelize.QueryTypes.SELECT
+    });
+
+    return results.map(row => ({
+        date: row.year.toString(),
+        label: row.year.toString(),
+        orderCount: parseInt(row.orderCount),
+        revenue: Math.round(parseFloat(row.totalRevenue) * 100) / 100,
+        avgOrderValue: Math.round(parseFloat(row.avgOrderValue) * 100) / 100,
+        value: getMetricValue(row, metric)
+    }));
+};
+
+/**
+ * Get the value based on selected metric
+ */
+const getMetricValue = (row, metric) => {
+    switch (metric) {
+        case 'orders':
+            return parseInt(row.orderCount);
+        case 'avgOrderValue':
+            return Math.round(parseFloat(row.avgOrderValue) * 100) / 100;
+        case 'revenue':
+        default:
+            return Math.round(parseFloat(row.totalRevenue) * 100) / 100;
+    }
+};
+
+/**
+ * Calculate summary statistics and comparisons
+ */
+const calculateSummary = (currentData, previousData, metric) => {
+    // Current period totals
+    const currentTotal = currentData.reduce((sum, item) => {
+        switch (metric) {
+            case 'orders':
+                return sum + item.orderCount;
+            case 'avgOrderValue':
+                return sum + item.avgOrderValue;
+            case 'revenue':
+            default:
+                return sum + item.revenue;
+        }
+    }, 0);
+
+    const currentOrders = currentData.reduce((sum, item) => sum + item.orderCount, 0);
+    const currentRevenue = currentData.reduce((sum, item) => sum + item.revenue, 0);
+
+    // Previous period totals
+    const previousTotal = previousData ? previousData.reduce((sum, item) => {
+        switch (metric) {
+            case 'orders':
+                return sum + item.orderCount;
+            case 'avgOrderValue':
+                return sum + item.avgOrderValue;
+            case 'revenue':
+            default:
+                return sum + item.revenue;
+        }
+    }, 0) : 0;
+
+    const previousOrders = previousData ? previousData.reduce((sum, item) => sum + item.orderCount, 0) : 0;
+    const previousRevenue = previousData ? previousData.reduce((sum, item) => sum + item.revenue, 0) : 0;
+
+    // Calculate changes
+    const calculateChange = (current, previous) => {
+        if (previous === 0) return current > 0 ? 100 : 0;
+        return Math.round(((current - previous) / previous) * 100);
+    };
+
+    // Find peak day/period
+    const peakData = currentData.reduce((max, item) =>
+        item.value > max.value ? item : max,
+        currentData[0] || { value: 0, label: 'N/A' }
+    );
+
+    // Find lowest day/period
+    const lowData = currentData.reduce((min, item) =>
+        item.value < min.value ? item : min,
+        currentData[0] || { value: 0, label: 'N/A' }
+    );
+
+    return {
+        current: {
+            total: Math.round(currentTotal * 100) / 100,
+            orders: currentOrders,
+            revenue: Math.round(currentRevenue * 100) / 100,
+            avgOrderValue: currentOrders > 0 ? Math.round((currentRevenue / currentOrders) * 100) / 100 : 0
+        },
+        previous: {
+            total: Math.round(previousTotal * 100) / 100,
+            orders: previousOrders,
+            revenue: Math.round(previousRevenue * 100) / 100,
+            avgOrderValue: previousOrders > 0 ? Math.round((previousRevenue / previousOrders) * 100) / 100 : 0
+        },
+        changes: {
+            total: calculateChange(currentTotal, previousTotal),
+            orders: calculateChange(currentOrders, previousOrders),
+            revenue: calculateChange(currentRevenue, previousRevenue),
+            avgOrderValue: calculateChange(
+                currentOrders > 0 ? currentRevenue / currentOrders : 0,
+                previousOrders > 0 ? previousRevenue / previousOrders : 0
+            )
+        },
+        peak: {
+            value: Math.round(peakData.value * 100) / 100,
+            period: peakData.label,
+            date: peakData.date
+        },
+        low: {
+            value: Math.round(lowData.value * 100) / 100,
+            period: lowData.label,
+            date: lowData.date
+        }
+    };
+};
+
+/**
+ * Generate insights based on the data
+ */
+const generateInsights = (data, summary) => {
+    const insights = [];
+
+    // Growth insights
+    if (summary.changes.total > 10) {
+        insights.push({
+            type: 'positive',
+            message: `Strong growth of ${summary.changes.total}% compared to previous period`
+        });
+    } else if (summary.changes.total < -10) {
+        insights.push({
+            type: 'negative',
+            message: `Decline of ${Math.abs(summary.changes.total)}% compared to previous period`
+        });
+    }
+
+    // Peak performance
+    if (summary.peak.value > 0) {
+        insights.push({
+            type: 'info',
+            message: `Peak performance on ${summary.peak.period} with ${summary.peak.value.toLocaleString()}`
+        });
+    }
+
+    // Trend analysis
+    if (data.length >= 3) {
+        const trend = analyzeTrend(data);
+        if (trend === 'upward') {
+            insights.push({
+                type: 'positive',
+                message: 'Showing an upward trend over the period'
+            });
+        } else if (trend === 'downward') {
+            insights.push({
+                type: 'warning',
+                message: 'Showing a downward trend - consider investigating'
+            });
+        }
+    }
+
+    return insights;
+};
+
+/**
+ * Analyze trend direction
+ */
+const analyzeTrend = (data) => {
+    if (data.length < 3) return 'insufficient';
+
+    const firstHalf = data.slice(0, Math.floor(data.length / 2));
+    const secondHalf = data.slice(Math.floor(data.length / 2));
+
+    const firstAvg = firstHalf.reduce((sum, item) => sum + item.value, 0) / firstHalf.length;
+    const secondAvg = secondHalf.reduce((sum, item) => sum + item.value, 0) / secondHalf.length;
+
+    const difference = ((secondAvg - firstAvg) / firstAvg) * 100;
+
+    if (difference > 5) return 'upward';
+    if (difference < -5) return 'downward';
+    return 'stable';
+};
+
+/**
+ * Calculate weekend vs weekday performance
+ */
+const calculateWeekendPerformance = (data) => {
+    const weekend = data.filter(day => day.dayOfWeek === 1 || day.dayOfWeek === 7); // Sunday = 1, Saturday = 7
+    const weekday = data.filter(day => day.dayOfWeek >= 2 && day.dayOfWeek <= 6);
+
+    const weekendAvg = weekend.reduce((sum, day) => sum + day.value, 0) / weekend.length;
+    const weekdayAvg = weekday.reduce((sum, day) => sum + day.value, 0) / weekday.length;
+
+    return {
+        weekendAverage: Math.round(weekendAvg * 100) / 100,
+        weekdayAverage: Math.round(weekdayAvg * 100) / 100,
+        difference: Math.round(((weekendAvg - weekdayAvg) / weekdayAvg) * 100)
+    };
+};
+
+/**
+ * Generate recommendations based on weekly patterns
+ */
+const generateWeeklyRecommendations = (data) => {
+    const recommendations = [];
+
+    const bestDay = data.reduce((max, day) => day.value > max.value ? day : max);
+    const worstDay = data.reduce((min, day) => day.value < min.value ? day : min);
+
+    recommendations.push(`Focus marketing efforts on ${worstDay.dayName} to boost performance`);
+    recommendations.push(`Leverage ${bestDay.dayName}'s success patterns for other days`);
+
+    return recommendations;
+};
+// ========================================
+// ADD THIS METHOD TO YOUR dashboard.controller.js
+// ========================================
+
+/**
+ * @desc    Get top products by total sales revenue (simplified for table)
+ * @route   GET /api/dashboard/top-products
+ * @access  Admin
+ */
+export const getTopProducts = async (req, res) => {
+    try {
+        const {
+            page = 1,
+            limit = 10,
+            sortBy = 'totalSold' // totalSold, orderCount, stock
+        } = req.query;
+
+        const offset = (page - 1) * limit;
+
+        // Simplified query - group by product to avoid duplicates
+        const topProductsQuery = `
+            SELECT 
+                p.productId,
+                p.name,
+                p.quantity as stock,
+                
+                -- Combine all suppliers for this product
+                GROUP_CONCAT(DISTINCT u.name SEPARATOR ', ') as vendors,
+                
+                -- Sales statistics (grouped by product)
+                COALESCE(SUM(coi.subtotal), 0) as totalSold,
+                COALESCE(COUNT(DISTINCT coi.orderId), 0) as orderCount
+                
+            FROM product p
+            
+            -- Get ALL suppliers for this product
+            LEFT JOIN productsupplier ps ON p.productId = ps.productId AND ps.status = 'Active'
+            LEFT JOIN suppliers s ON ps.supplierId = s.id
+            LEFT JOIN user u ON s.userId = u.userId
+            
+            -- Get sales data from shipped orders only
+            LEFT JOIN customerorderItems coi ON p.productId = coi.productId
+            LEFT JOIN customerorders co ON coi.orderId = co.id AND co.status = 'Shipped'
+            
+            WHERE p.status = 'Active'
+            
+            GROUP BY p.productId, p.name, p.quantity
+                
+            ORDER BY ${sortBy === 'orderCount' ? 'orderCount' :
+                sortBy === 'stock' ? 'stock' :
+                    'totalSold'} DESC
+                      
+            LIMIT :limit OFFSET :offset
+        `;
+
+        // Execute the query
+        const rawProducts = await sequelize.query(topProductsQuery, {
+            replacements: {
+                limit: parseInt(limit),
+                offset: parseInt(offset)
+            },
+            type: sequelize.QueryTypes.SELECT
+        });
+
+        // Get total count for pagination
+        const countQuery = `
+            SELECT COUNT(DISTINCT p.productId) as count
+            FROM product p
+            WHERE p.status = 'Active'
+        `;
+
+        const countResult = await sequelize.query(countQuery, {
+            type: sequelize.QueryTypes.SELECT
+        });
+
+        const totalProducts = parseInt(countResult[0].count) || 0;
+
+        // Format the response - ONLY table data
+        const products = rawProducts.map(product => ({
+            productId: product.productId,
+            name: product.name || 'Unknown Product',
+            vendor: product.vendors || 'No Vendor',
+            totalSold: Math.round(parseFloat(product.totalSold || 0) * 100) / 100,
+            stock: parseInt(product.stock || 0)
+        }));
+
+        return res.status(200).json({
+            message: 'Top products retrieved successfully',
+            products: products,
+            pagination: {
+                currentPage: parseInt(page),
+                limit: parseInt(limit),
+                totalItems: totalProducts,
+                totalPages: Math.ceil(totalProducts / limit),
+                hasNextPage: page * limit < totalProducts,
+                hasPreviousPage: page > 1
+            }
+        });
+
+    } catch (error) {
+        console.error('Error getting top products:', error);
+        return res.status(500).json({
+            message: 'Internal server error'
+        });
+    }
+};
