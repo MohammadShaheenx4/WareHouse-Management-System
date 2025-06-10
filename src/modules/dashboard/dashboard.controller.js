@@ -2195,3 +2195,162 @@ export const getProductSalesByPeriod = async (req, res) => {
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
+
+
+const formatStatus = (status) => {
+    const statusMap = {
+        'Pending': 'On the way',
+        'Accepted': 'On the way',
+        'Confirmed': 'On the way',
+        'Preparing': 'On the way',
+        'Shipped': 'Completed',
+        'Delivered': 'Completed',
+        'Rejected': 'Cancelled',
+        'Cancelled': 'Cancelled'
+    };
+
+    return statusMap[status] || status;
+};
+
+/**
+ * @desc    Get product selling history (orders containing this product)
+ * @route   GET /api/dashboard/product-selling-history/:productId
+ * @access  Admin
+ * @query   page, limit, status, startDate, endDate
+ */
+export const getProductSellingHistory = async (req, res) => {
+    try {
+        const { productId } = req.params;
+        const {
+            page = 1,
+            limit = 10,
+            status,
+            startDate,
+            endDate
+        } = req.query;
+
+        // Validate product ID
+        if (!productId || isNaN(productId)) {
+            return res.status(400).json({ message: 'Valid product ID is required' });
+        }
+
+        // Check if product exists
+        const product = await productModel.findByPk(productId);
+        if (!product) {
+            return res.status(404).json({ message: 'Product not found' });
+        }
+
+        const offset = (page - 1) * limit;
+
+        // Build WHERE conditions
+        let whereConditions = ['coi.productId = :productId'];
+        const replacements = { productId: parseInt(productId) };
+
+        // Add status filter
+        if (status) {
+            whereConditions.push('co.status = :status');
+            replacements.status = status;
+        }
+
+        // Add date range filter
+        if (startDate) {
+            whereConditions.push('co.createdAt >= :startDate');
+            replacements.startDate = new Date(startDate);
+        }
+
+        if (endDate) {
+            const endDateTime = new Date(endDate);
+            endDateTime.setHours(23, 59, 59, 999);
+            whereConditions.push('co.createdAt <= :endDate');
+            replacements.endDate = endDateTime;
+        }
+
+        const whereClause = whereConditions.join(' AND ');
+
+        // Query for selling history
+        const historyQuery = `
+            SELECT 
+                co.id as orderId,
+                co.totalCost as orderPrice,
+                co.createdAt as orderDate,
+                co.status,
+                u.name as customerName,
+                coi.quantity,
+                coi.subtotal
+            FROM customerorders co
+            INNER JOIN customerorderItems coi ON co.id = coi.orderId
+            INNER JOIN customers c ON co.customerId = c.id
+            INNER JOIN user u ON c.userId = u.userId
+            WHERE ${whereClause}
+            ORDER BY co.createdAt DESC
+            LIMIT :limit OFFSET :offset
+        `;
+
+        // Query for total count
+        const countQuery = `
+            SELECT COUNT(*) as total
+            FROM customerorders co
+            INNER JOIN customerorderItems coi ON co.id = coi.orderId
+            WHERE ${whereClause}
+        `;
+
+        const [historyResults, countResults] = await Promise.all([
+            sequelize.query(historyQuery, {
+                replacements: { ...replacements, limit: parseInt(limit), offset: parseInt(offset) },
+                type: sequelize.QueryTypes.SELECT
+            }),
+            sequelize.query(countQuery, {
+                replacements: replacements,
+                type: sequelize.QueryTypes.SELECT
+            })
+        ]);
+
+        const totalItems = parseInt(countResults[0].total) || 0;
+        const totalPages = Math.ceil(totalItems / limit);
+
+        // Format the response
+        const sellingHistory = historyResults.map(row => ({
+            orderId: `#${row.orderId}`,
+            orderPrice: `$${parseFloat(row.orderPrice).toFixed(2)}`,
+            orderDate: new Date(row.orderDate).toLocaleDateString('en-US', {
+                month: 'numeric',
+                day: 'numeric',
+                year: 'numeric'
+            }),
+            customer: row.customerName || 'Unknown Customer',
+            status: formatStatus(row.status),
+            quantity: parseInt(row.quantity),
+            subtotal: parseFloat(row.subtotal)
+        }));
+
+        return res.status(200).json({
+            message: 'Product selling history retrieved successfully',
+            product: {
+                productId: product.productId,
+                name: product.name
+            },
+            history: sellingHistory,
+            pagination: {
+                currentPage: parseInt(page),
+                limit: parseInt(limit),
+                totalItems: totalItems,
+                totalPages: totalPages,
+                hasNextPage: page < totalPages,
+                hasPreviousPage: page > 1
+            },
+            filters: {
+                status: status || null,
+                dateRange: {
+                    start: startDate || null,
+                    end: endDate || null
+                }
+            }
+        });
+
+    } catch (error) {
+        console.error('Error getting product selling history:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+

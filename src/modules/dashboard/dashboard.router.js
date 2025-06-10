@@ -19,5 +19,6 @@ router.get('/profit-chart', Auth.adminOnly, controller.getProfitChart);
 router.get('/profit-chart/period', Auth.adminOnly, controller.getProfitChartByPeriod);
 router.get('/product-sales/:productId', Auth.adminOnly, controller.getProductSales);
 router.get('/product-sales/:productId/period', Auth.adminOnly, controller.getProductSalesByPeriod);
+router.get('/product-selling-history/:productId', Auth.adminOnly, controller.getProductSellingHistory);
 
 export default router;
