@@ -409,3 +409,184 @@ export const getDashboardCards = async (req, res) => {
     }
 };
 
+/**
+ * @desc    Get top customers with order statistics and percentages
+ * @route   GET /api/dashboard/top-customers
+ * @access  Admin
+ */
+export const getTopCustomers = async (req, res) => {
+    try {
+        // Get pagination and sorting parameters
+        const {
+            page = 1,
+            limit = 10,
+            sortBy = 'orderCount', // orderCount, totalSpent, avgOrderValue
+            minOrders = 1 // Minimum orders to be included
+        } = req.query;
+
+        const offset = (page - 1) * limit;
+
+        // Get total statistics for percentage calculations
+        const [totalCustomers, totalOrdersResult] = await Promise.all([
+            customerModel.count(),
+            customerOrderModel.findOne({
+                attributes: [
+                    [sequelize.fn('COUNT', sequelize.col('id')), 'totalOrders'],
+                    [sequelize.fn('SUM', sequelize.col('totalCost')), 'totalRevenue']
+                ],
+                raw: true
+            })
+        ]);
+
+        const totalOrders = parseInt(totalOrdersResult.totalOrders) || 0;
+        const totalRevenue = parseFloat(totalOrdersResult.totalRevenue) || 0;
+
+        // Build the query to get customers with their order statistics
+        const customerStatsQuery = `
+            SELECT 
+                c.id as customerId,
+                c.address,
+                c.accountBalance,
+                u.userId,
+                u.name,
+                u.email,
+                u.phoneNumber,
+                COUNT(co.id) as orderCount,
+                COALESCE(SUM(co.totalCost), 0) as totalSpent,
+                COALESCE(AVG(co.totalCost), 0) as avgOrderValue,
+                MAX(co.createdAt) as lastOrderDate,
+                MIN(co.createdAt) as firstOrderDate
+            FROM customers c
+            INNER JOIN user u ON c.userId = u.userId
+            LEFT JOIN customerorders co ON c.id = co.customerId
+            GROUP BY c.id, c.address, c.accountBalance, u.userId, u.name, u.email, u.phoneNumber
+            HAVING COUNT(co.id) >= :minOrders
+            ORDER BY ${sortBy === 'totalSpent' ? 'totalSpent' :
+                sortBy === 'avgOrderValue' ? 'avgOrderValue' :
+                    'orderCount'} DESC
+            LIMIT :limit OFFSET :offset
+        `;
+
+        // Execute the query
+        const rawCustomers = await sequelize.query(customerStatsQuery, {
+            replacements: {
+                minOrders: parseInt(minOrders),
+                limit: parseInt(limit),
+                offset: parseInt(offset)
+            },
+            type: sequelize.QueryTypes.SELECT
+        });
+
+        // Get count of customers with at least minOrders orders for pagination
+        const totalActiveCustomersQuery = `
+            SELECT COUNT(*) as count
+            FROM (
+                SELECT c.id
+                FROM customers c
+                LEFT JOIN customerorders co ON c.id = co.customerId
+                GROUP BY c.id
+                HAVING COUNT(co.id) >= :minOrders
+            ) as activeCustomers
+        `;
+
+        const totalActiveCustomersResult = await sequelize.query(totalActiveCustomersQuery, {
+            replacements: { minOrders: parseInt(minOrders) },
+            type: sequelize.QueryTypes.SELECT
+        });
+
+        const totalActiveCustomers = parseInt(totalActiveCustomersResult[0].count) || 0;
+
+        // Format and calculate percentages
+        const formattedCustomers = rawCustomers.map((customer, index) => {
+            const orderCount = parseInt(customer.orderCount) || 0;
+            const totalSpent = parseFloat(customer.totalSpent) || 0;
+            const avgOrderValue = parseFloat(customer.avgOrderValue) || 0;
+
+            // Calculate percentages
+            const orderPercentage = totalOrders > 0 ? ((orderCount / totalOrders) * 100) : 0;
+            const revenuePercentage = totalRevenue > 0 ? ((totalSpent / totalRevenue) * 100) : 0;
+
+            // Calculate days since last order
+            const daysSinceLastOrder = customer.lastOrderDate
+                ? Math.floor((new Date() - new Date(customer.lastOrderDate)) / (1000 * 60 * 60 * 24))
+                : null;
+
+            // Calculate customer lifetime (days since first order)
+            const customerLifetimeDays = customer.firstOrderDate
+                ? Math.floor((new Date() - new Date(customer.firstOrderDate)) / (1000 * 60 * 60 * 24))
+                : null;
+
+            return {
+                rank: offset + index + 1,
+                customerId: customer.customerId,
+                name: customer.name || 'Unknown',
+                email: customer.email || '',
+                phoneNumber: customer.phoneNumber || '',
+                address: customer.address || '',
+                accountBalance: parseFloat(customer.accountBalance) || 0,
+                orderCount: orderCount,
+                totalSpent: Math.round(totalSpent * 100) / 100, // Round to 2 decimal places
+                avgOrderValue: Math.round(avgOrderValue * 100) / 100,
+                orderPercentage: Math.round(orderPercentage * 100) / 100,
+                revenuePercentage: Math.round(revenuePercentage * 100) / 100,
+                lastOrderDate: customer.lastOrderDate,
+                firstOrderDate: customer.firstOrderDate,
+                daysSinceLastOrder: daysSinceLastOrder,
+                customerLifetimeDays: customerLifetimeDays,
+                // Customer segments based on behavior
+                segment: getCustomerSegment(orderCount, totalSpent, daysSinceLastOrder)
+            };
+        });
+
+        return res.status(200).json({
+            message: 'Top customers retrieved successfully',
+            summary: {
+                totalCustomers: totalCustomers,
+                totalActiveCustomers: totalActiveCustomers,
+                totalOrders: totalOrders,
+                totalRevenue: Math.round(totalRevenue * 100) / 100,
+                avgOrdersPerCustomer: totalActiveCustomers > 0 ? Math.round((totalOrders / totalActiveCustomers) * 100) / 100 : 0,
+                avgRevenuePerCustomer: totalActiveCustomers > 0 ? Math.round((totalRevenue / totalActiveCustomers) * 100) / 100 : 0
+            },
+            customers: formattedCustomers,
+            pagination: {
+                currentPage: parseInt(page),
+                limit: parseInt(limit),
+                totalItems: totalActiveCustomers,
+                totalPages: Math.ceil(totalActiveCustomers / limit),
+                hasNextPage: page * limit < totalActiveCustomers,
+                hasPreviousPage: page > 1
+            },
+            filters: {
+                sortBy: sortBy,
+                minOrders: parseInt(minOrders)
+            }
+        });
+    } catch (error) {
+        console.error('Error getting top customers:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+/**
+ * Helper function to determine customer segment based on behavior
+ */
+const getCustomerSegment = (orderCount, totalSpent, daysSinceLastOrder) => {
+    // High-value customers
+    if (totalSpent > 1000 && orderCount > 10) {
+        return daysSinceLastOrder < 30 ? 'VIP Active' : 'VIP Inactive';
+    }
+
+    // Regular customers
+    if (orderCount > 5 && totalSpent > 300) {
+        return daysSinceLastOrder < 60 ? 'Regular Active' : 'Regular Inactive';
+    }
+
+    // New customers
+    if (orderCount <= 3) {
+        return daysSinceLastOrder < 90 ? 'New' : 'New Inactive';
+    }
+
+    // Low-value customers
+    return daysSinceLastOrder < 90 ? 'Occasional' : 'Dormant';
+};
