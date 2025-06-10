@@ -78,7 +78,7 @@ const productModel = sequelize.define('Product', {
     }
 }, {
     tableName: 'product', // Explicitly define the table name
-    timestamps: false, // Disable createdAt & updatedAt
+    timestamps: true, // Disable createdAt & updatedAt
 });
 
 // Define association with category

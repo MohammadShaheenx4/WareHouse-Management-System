@@ -12,7 +12,7 @@ import customerRouter from './modules/customer/customer.router.js'
 import workerRouter from './modules/worker/worker.router.js'
 import deliveryRouter from './modules/delivery/delivery.router.js'
 import lowstockRouter from './modules/lowstock/lowStock.router.js'
-
+import dashboardRouter from './modules/dashboard//dashboard.router.js';
 
 
 import 'dotenv/config'
@@ -51,7 +51,7 @@ const initApp = async (app, express) => {
     app.use('/worker', workerRouter);
     app.use('/delivery', deliveryRouter);
     app.use('/low-stock', lowstockRouter);
-
+    app.use('/dashboard', dashboardRouter);
 
 
 

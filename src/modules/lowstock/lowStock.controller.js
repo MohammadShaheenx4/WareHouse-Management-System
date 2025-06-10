@@ -89,7 +89,7 @@ export const getLowStockItems = async (req, res) => {
                 // Check for pending/active orders that should block this item
                 const pendingOrActiveOrders = existingOrders.filter(orderItem => {
                     const status = orderItem.order.status;
-                    return ['Pending', 'Accepted', 'PartiallyAccepted', 'Delivered'].includes(status);
+                    return ['Pending', 'Accepted', 'PartiallyAccepted'].includes(status);
                 });
 
                 // 🔹 FILTER LOGIC: Skip if there are pending/active orders
@@ -333,7 +333,16 @@ export const generateLowStockOrders = async (req, res) => {
                 }
 
                 // Get the supplier-specific price
-                const supplierPrice = preferredSupplier.ProductSupplier?.priceSupplier || product.costPrice;
+                // ✅ CORRECT - Direct database query (most reliable)
+                const productSupplierData = await productSupplierModel.findOne({
+                    where: {
+                        productId: product.productId,
+                        supplierId: supplierId
+                    },
+                    attributes: ['priceSupplier', 'status']
+                });
+
+                const supplierPrice = productSupplierData?.priceSupplier || product.costPrice;
 
                 supplierProductsMap.get(supplierId).products.push({
                     productId: product.productId,
