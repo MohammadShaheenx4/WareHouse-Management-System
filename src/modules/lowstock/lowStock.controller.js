@@ -207,7 +207,12 @@ export const generateLowStockOrders = async (req, res) => {
     const transaction = await sequelize.transaction();
 
     try {
-        const { selectedProductIds = [], selectAll = false } = req.body;
+        const {
+            selectedProductIds = [],
+            selectAll = false,
+            customSuppliers = {},      // NEW: Custom supplier selections
+            customQuantities = {}      // NEW: Custom quantity selections
+        } = req.body;
 
         // Build where condition based on selection
         let productWhereCondition = {
@@ -283,18 +288,38 @@ export const generateLowStockOrders = async (req, res) => {
                 order: [['createdAt', 'DESC']]
             });
 
-            // Determine preferred supplier (last ordered from, or first available)
+            // **FIX: Check for custom supplier first**
             let preferredSupplier = null;
-            let orderQuantity = Math.max(product.lowStock * 2, product.lowStock - product.quantity + 10); // Order enough to go above threshold
+            let orderQuantity = Math.max(product.lowStock * 2, product.lowStock - product.quantity + 10); // Default quantity calculation
 
-            if (lastOrderItem && product.suppliers.find(s => s.id === lastOrderItem.order.supplierId)) {
-                // Use the supplier from the last order if they're still available
-                preferredSupplier = product.suppliers.find(s => s.id === lastOrderItem.order.supplierId);
-                // Use similar quantity as last order, but ensure it's enough to cover deficit
-                orderQuantity = Math.max(lastOrderItem.quantity, orderQuantity);
-            } else if (product.suppliers.length > 0) {
-                // Use the first available supplier
-                preferredSupplier = product.suppliers[0];
+            // **NEW: Use custom supplier if specified**
+            const customSupplierId = customSuppliers[product.productId.toString()];
+            if (customSupplierId) {
+                // Find the custom supplier in the product's suppliers list
+                preferredSupplier = product.suppliers.find(s => s.id === parseInt(customSupplierId));
+
+                if (!preferredSupplier) {
+                    // If custom supplier not found in product's suppliers, skip this product
+                    console.warn(`Custom supplier ${customSupplierId} not found for product ${product.productId}`);
+                    continue;
+                }
+            } else {
+                // **FALLBACK: Use default logic for supplier selection**
+                if (lastOrderItem && product.suppliers.find(s => s.id === lastOrderItem.order.supplierId)) {
+                    // Use the supplier from the last order if they're still available
+                    preferredSupplier = product.suppliers.find(s => s.id === lastOrderItem.order.supplierId);
+                    // Use similar quantity as last order, but ensure it's enough to cover deficit
+                    orderQuantity = Math.max(lastOrderItem.quantity, orderQuantity);
+                } else if (product.suppliers.length > 0) {
+                    // Use the first available supplier
+                    preferredSupplier = product.suppliers[0];
+                }
+            }
+
+            // **NEW: Use custom quantity if specified**
+            const customQuantity = customQuantities[product.productId.toString()];
+            if (customQuantity && customQuantity > 0) {
+                orderQuantity = parseInt(customQuantity);
             }
 
             if (preferredSupplier) {
@@ -318,7 +343,9 @@ export const generateLowStockOrders = async (req, res) => {
                     orderQuantity: orderQuantity,
                     costPrice: supplierPrice,
                     lastOrderQuantity: lastOrderItem ? lastOrderItem.quantity : null,
-                    lastOrderDate: lastOrderItem ? lastOrderItem.createdAt : null
+                    lastOrderDate: lastOrderItem ? lastOrderItem.createdAt : null,
+                    isCustomSupplier: !!customSupplierId,        // Track if custom supplier was used
+                    isCustomQuantity: !!customQuantity           // Track if custom quantity was used
                 });
             }
         }
@@ -344,13 +371,28 @@ export const generateLowStockOrders = async (req, res) => {
                 });
             }
 
+            // Create custom note mentioning customizations
+            const customizedProducts = supplierData.products.filter(p => p.isCustomSupplier || p.isCustomQuantity);
+            let noteAddition = '';
+            if (customizedProducts.length > 0) {
+                const customSupplierProducts = customizedProducts.filter(p => p.isCustomSupplier).map(p => p.name);
+                const customQuantityProducts = customizedProducts.filter(p => p.isCustomQuantity).map(p => `${p.name}(${p.orderQuantity})`);
+
+                if (customSupplierProducts.length > 0) {
+                    noteAddition += ` Custom supplier selected for: ${customSupplierProducts.join(', ')}.`;
+                }
+                if (customQuantityProducts.length > 0) {
+                    noteAddition += ` Custom quantities: ${customQuantityProducts.join(', ')}.`;
+                }
+            }
+
             // Create the order directly as Pending (sent to supplier)
             const newOrder = await supplierOrderModel.create({
                 supplierId: supplierId,
                 totalCost: totalCost,
                 status: 'Pending', // Direct to Pending - no draft stage
                 isAutoGenerated: true,
-                note: `Auto-generated order for low stock items. Generated on ${new Date().toISOString()}. Sent directly to supplier.`
+                note: `Auto-generated order for low stock items. Generated on ${new Date().toISOString()}. Sent directly to supplier.${noteAddition}`
             }, { transaction });
 
             // Create order items
@@ -398,6 +440,10 @@ export const generateLowStockOrders = async (req, res) => {
             generatedOrders: generatedOrders,
             count: generatedOrders.length,
             selectedItems: lowStockProducts.length,
+            customizations: {
+                customSuppliers: Object.keys(customSuppliers).length,
+                customQuantities: Object.keys(customQuantities).length
+            },
             note: "Orders have been sent directly to suppliers"
         });
 
