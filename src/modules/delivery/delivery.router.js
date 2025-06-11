@@ -63,4 +63,7 @@ router.get('/history', Auth.isAuthenticated, deliveryController.getDeliveryHisto
 // Get delivery employee profile
 router.get('/profile', Auth.isAuthenticated, deliveryController.getProfile);
 
+router.get('/today-detailed', Auth.isAuthenticated, deliveryController.getTodayDetailedStats);
+router.get('/today-stats', Auth.isAuthenticated, deliveryController.getTodayDeliveryStats);
+
 export default router;

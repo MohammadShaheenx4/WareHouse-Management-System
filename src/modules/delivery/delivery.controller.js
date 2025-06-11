@@ -1305,3 +1305,185 @@ export const getAllDeliveryEmployees = async (req, res) => {
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
+
+// Get today's delivery performance with hourly breakdown
+export const getTodayDetailedStats = async (req, res) => {
+    try {
+        const deliveryEmployee = await deliveryEmployeeModel.findOne({
+            where: { userId: req.user.userId }
+        });
+
+        if (!deliveryEmployee) {
+            return res.status(403).json({ message: 'Access denied. User is not a delivery employee' });
+        }
+
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+
+        const todayEnd = new Date();
+        todayEnd.setHours(23, 59, 59, 999);
+
+        // Get hourly breakdown of deliveries
+        const hourlyStats = await deliveryHistoryModel.findAll({
+            attributes: [
+                [sequelize.fn('HOUR', sequelize.col('endTime')), 'hour'],
+                [sequelize.fn('COUNT', sequelize.col('id')), 'deliveries'],
+                [sequelize.fn('SUM', sequelize.col('totalAmount')), 'revenue']
+            ],
+            where: {
+                deliveryEmployeeId: deliveryEmployee.id,
+                endTime: {
+                    [Op.between]: [todayStart, todayEnd]
+                }
+            },
+            group: [sequelize.fn('HOUR', sequelize.col('endTime'))],
+            order: [[sequelize.fn('HOUR', sequelize.col('endTime')), 'ASC']],
+            raw: true
+        });
+
+        // Get recent completed deliveries (last 5)
+        const recentDeliveries = await deliveryHistoryModel.findAll({
+            where: {
+                deliveryEmployeeId: deliveryEmployee.id,
+                endTime: {
+                    [Op.between]: [todayStart, todayEnd]
+                }
+            },
+            include: [
+                {
+                    model: customerModel,
+                    as: 'customer',
+                    attributes: ['address'],
+                    include: [{
+                        model: userModel,
+                        as: 'user',
+                        attributes: ['name']
+                    }]
+                }
+            ],
+            order: [['endTime', 'DESC']],
+            limit: 5
+        });
+
+        return res.status(200).json({
+            hourlyBreakdown: hourlyStats.map(stat => ({
+                hour: parseInt(stat.hour),
+                deliveries: parseInt(stat.deliveries),
+                revenue: parseFloat(stat.revenue) || 0
+            })),
+            recentDeliveries: recentDeliveries.map(delivery => ({
+                orderId: delivery.orderId,
+                customerName: delivery.customer?.user?.name || 'Unknown',
+                address: delivery.customer?.address || 'Unknown',
+                amount: delivery.totalAmount,
+                deliveryTime: delivery.actualTime,
+                completedAt: delivery.endTime
+            }))
+        });
+    } catch (error) {
+        console.error('Error getting detailed today stats:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// Get today's delivery statistics for delivery employee dashboard
+export const getTodayDeliveryStats = async (req, res) => {
+    try {
+        const deliveryEmployee = await deliveryEmployeeModel.findOne({
+            where: { userId: req.user.userId }
+        });
+
+        if (!deliveryEmployee) {
+            return res.status(403).json({ message: 'Access denied. User is not a delivery employee' });
+        }
+
+        // Set today's date range (start and end of today)
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+
+        const todayEnd = new Date();
+        todayEnd.setHours(23, 59, 59, 999);
+
+        // Get today's completed deliveries for this employee
+        const todayStats = await deliveryHistoryModel.findOne({
+            attributes: [
+                [sequelize.fn('COUNT', sequelize.col('id')), 'totalDeliveries'],
+                [sequelize.fn('SUM', sequelize.col('totalAmount')), 'totalRevenue'],
+                [sequelize.fn('AVG', sequelize.col('actualTime')), 'avgDeliveryTime'],
+                [sequelize.fn('SUM', sequelize.col('amountPaid')), 'totalAmountPaid']
+            ],
+            where: {
+                deliveryEmployeeId: deliveryEmployee.id,
+                endTime: { [Op.not]: null },
+                createdAt: {
+                    [Op.between]: [todayStart, todayEnd]
+                }
+            },
+            raw: true
+        });
+
+        // Get today's active orders count (assigned or in progress)
+        const todayActiveOrders = await customerOrderModel.count({
+            where: {
+                deliveryEmployeeId: deliveryEmployee.id,
+                status: { [Op.in]: ['Assigned', 'on_theway'] },
+                assignedAt: {
+                    [Op.between]: [todayStart, todayEnd]
+                }
+            }
+        });
+
+        // Get today's returned orders count
+        const todayReturns = await customerOrderModel.count({
+            where: {
+                deliveryEmployeeId: deliveryEmployee.id,
+                status: 'Returned',
+                deliveryEndTime: {
+                    [Op.between]: [todayStart, todayEnd]
+                }
+            }
+        });
+
+        // Calculate average revenue per delivery for today
+        const totalDeliveries = parseInt(todayStats.totalDeliveries) || 0;
+        const totalRevenue = parseFloat(todayStats.totalRevenue) || 0;
+        const avgRevenuePerDelivery = totalDeliveries > 0 ? (totalRevenue / totalDeliveries) : 0;
+
+        // Get pending orders (unassigned today)
+        const todayPendingOrders = await customerOrderModel.count({
+            where: {
+                status: 'Prepared',
+                deliveryEmployeeId: null,
+                createdAt: {
+                    [Op.between]: [todayStart, todayEnd]
+                }
+            }
+        });
+
+        return res.status(200).json({
+            date: todayStart.toISOString().split('T')[0], // Today's date in YYYY-MM-DD format
+            todayStats: {
+                totalDeliveries: totalDeliveries,
+                totalRevenue: totalRevenue,
+                avgDeliveryTime: Math.round(todayStats.avgDeliveryTime) || 0,
+                avgRevenuePerDelivery: Math.round(avgRevenuePerDelivery * 100) / 100, // Round to 2 decimal places
+                totalAmountPaid: parseFloat(todayStats.totalAmountPaid) || 0
+            },
+            todayActivity: {
+                activeOrders: todayActiveOrders,
+                completedDeliveries: totalDeliveries,
+                returnedOrders: todayReturns,
+                pendingOrders: todayPendingOrders
+            },
+            performance: {
+                completionRate: (todayActiveOrders + totalDeliveries) > 0 ?
+                    Math.round((totalDeliveries / (todayActiveOrders + totalDeliveries)) * 100) : 0,
+                returnRate: (totalDeliveries + todayReturns) > 0 ?
+                    Math.round((todayReturns / (totalDeliveries + todayReturns)) * 100) : 0
+            }
+        });
+    } catch (error) {
+        console.error('Error getting today delivery stats:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};

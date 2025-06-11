@@ -2595,72 +2595,187 @@ export const getDetailedTracking = async (req, res) => {
             offsetClause = `OFFSET ${offset}`;
         }
 
-        // Main query for comprehensive order tracking data
-        const trackingQuery = `
-            SELECT 
-                -- Order Core Information
-                co.id as orderId,
-                co.totalCost,
-                co.createdAt as orderCreatedDate,
-                co.updatedAt as orderLastUpdated,
-                co.status as currentStatus,
-                co.note as orderNotes,
-                co.paymentMethod,
-                co.amountPaid,
-                co.discount,
-                
-                -- Order Timing
-                co.deliveryStartTime,
-                co.deliveryEndTime,
-                co.estimatedDeliveryTime,
-                
-                -- Customer Core Information
-                c.id as customerId,
-                c.address as customerAddress,
-                c.latitude as customerLatitude,
-                c.longitude as customerLongitude,
-                c.accountBalance as customerAccountBalance,
-                
-                -- Customer User Information
-                u.userId,
-                u.name as customerName,
-                u.email as customerEmail,
-                u.phoneNumber as customerPhone,
-                u.registrationDate as customerRegistrationDate,
-                u.isActive as customerActiveStatus,
-                
-                -- Delivery Location (assuming same as customer for now)
-                c.address as deliveryAddress,
-                c.latitude as deliveryLatitude,
-                c.longitude as deliveryLongitude,
-                
-                -- Calculate order age in minutes
-                TIMESTAMPDIFF(MINUTE, co.createdAt, NOW()) as orderAgeMinutes,
-                
-                -- Calculate estimated delivery time remaining
-                CASE 
-                    WHEN co.estimatedDeliveryTime IS NOT NULL 
-                    THEN TIMESTAMPDIFF(MINUTE, NOW(), co.estimatedDeliveryTime)
-                    ELSE NULL 
-                END as estimatedMinutesRemaining
-                
-            FROM customerorders co
-            INNER JOIN customers c ON co.customerId = c.id
-            INNER JOIN user u ON c.userId = u.userId
-            WHERE co.status = 'on_theway'
-            ORDER BY co.createdAt DESC
-            ${limitClause} ${offsetClause}
+        // ✅ STEP 1: First, let's check what delivery-related columns exist
+        const columnCheckQuery = `
+            SELECT COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = 'customerorders' 
+            AND (
+                COLUMN_NAME LIKE '%delivery%' OR 
+                COLUMN_NAME LIKE '%employee%' OR
+                COLUMN_NAME LIKE '%person%' OR
+                COLUMN_NAME LIKE '%assigned%'
+            )
         `;
 
-        // Query for order items with full product details
+        const columnResults = await sequelize.query(columnCheckQuery, {
+            type: sequelize.QueryTypes.SELECT
+        });
+
+        console.log('Available delivery columns:', columnResults);
+
+        // ✅ STEP 2: Try different possible column names for delivery employee link
+        let deliveryJoinColumn = null;
+        const possibleColumns = [
+            'deliveryId',
+            'deliveryEmployeeId',
+            'delivery_employee_id',
+            'deliveryPersonId',
+            'delivery_person_id',
+            'assignedDeliveryId',
+            'assigned_delivery_id',
+            'deliveryUserId',
+            'delivery_user_id'
+        ];
+
+        // Check which column exists
+        for (const col of possibleColumns) {
+            if (columnResults.some(result => result.COLUMN_NAME === col)) {
+                deliveryJoinColumn = col;
+                break;
+            }
+        }
+
+        console.log('Using delivery column:', deliveryJoinColumn);
+
+        // ✅ STEP 3: Build the main tracking query
+        let trackingQuery;
+
+        if (deliveryJoinColumn) {
+            // If we found a delivery employee column, use it
+            trackingQuery = `
+                SELECT 
+                    -- Order Core Information
+                    co.id as orderId,
+                    co.totalCost,
+                    co.createdAt as orderCreatedDate,
+                    co.updatedAt as orderLastUpdated,
+                    co.status as currentStatus,
+                    co.note as orderNotes,
+                    co.paymentMethod,
+                    co.amountPaid,
+                    co.discount,
+                    co.${deliveryJoinColumn} as deliveryEmployeeLink,
+                    
+                    -- Order Timing
+                    co.deliveryStartTime,
+                    co.deliveryEndTime,
+                    co.estimatedDeliveryTime,
+                    
+                    -- Customer Information
+                    c.id as customerId,
+                    c.address as customerAddress,
+                    c.latitude as customerLatitude,
+                    c.longitude as customerLongitude,
+                    c.accountBalance as customerAccountBalance,
+                    
+                    -- Customer User Information
+                    u.userId,
+                    u.name as customerName,
+                    u.email as customerEmail,
+                    u.phoneNumber as customerPhone,
+                    u.registrationDate as customerRegistrationDate,
+                    u.isActive as customerActiveStatus,
+                    
+                    -- ✅ DELIVERY EMPLOYEE CURRENT LOCATION
+                    de.id as deliveryEmployeeId,
+                    de.userId as deliveryEmployeeUserId,
+                    de.currentLatitude as deliveryCurrentLatitude,
+                    de.currentLongitude as deliveryCurrentLongitude,
+                    de.isAvailable as deliveryEmployeeAvailable,
+                    de.lastLocationUpdate as deliveryLastLocationUpdate,
+                    du.name as deliveryEmployeeName,
+                    du.phoneNumber as deliveryEmployeePhone,
+                    
+                    -- Calculate order age and distance
+                    TIMESTAMPDIFF(MINUTE, co.createdAt, NOW()) as orderAgeMinutes,
+                    CASE 
+                        WHEN co.estimatedDeliveryTime IS NOT NULL 
+                        THEN TIMESTAMPDIFF(MINUTE, NOW(), co.estimatedDeliveryTime)
+                        ELSE NULL 
+                    END as estimatedMinutesRemaining,
+                    
+                    -- Calculate distance between delivery employee and customer
+                    CASE 
+                        WHEN de.currentLatitude IS NOT NULL AND de.currentLongitude IS NOT NULL
+                             AND c.latitude IS NOT NULL AND c.longitude IS NOT NULL
+                        THEN (
+                            6371 * acos(
+                                cos(radians(c.latitude)) * 
+                                cos(radians(de.currentLatitude)) * 
+                                cos(radians(de.currentLongitude) - radians(c.longitude)) + 
+                                sin(radians(c.latitude)) * 
+                                sin(radians(de.currentLatitude))
+                            )
+                        )
+                        ELSE NULL 
+                    END as distanceToDestinationKm
+                    
+                FROM customerorders co
+                INNER JOIN customers c ON co.customerId = c.id
+                INNER JOIN user u ON c.userId = u.userId
+                LEFT JOIN delivery_employees de ON co.${deliveryJoinColumn} = de.id
+                LEFT JOIN user du ON de.userId = du.userId
+                WHERE co.status = 'on_theway'
+                ORDER BY co.createdAt DESC
+                ${limitClause} ${offsetClause}
+            `;
+        } else {
+            // Fallback: Just customer data without delivery employee
+            trackingQuery = `
+                SELECT 
+                    co.id as orderId,
+                    co.totalCost,
+                    co.createdAt as orderCreatedDate,
+                    co.updatedAt as orderLastUpdated,
+                    co.status as currentStatus,
+                    co.note as orderNotes,
+                    co.paymentMethod,
+                    co.amountPaid,
+                    co.discount,
+                    co.deliveryStartTime,
+                    co.deliveryEndTime,
+                    co.estimatedDeliveryTime,
+                    c.id as customerId,
+                    c.address as customerAddress,
+                    c.latitude as customerLatitude,
+                    c.longitude as customerLongitude,
+                    c.accountBalance as customerAccountBalance,
+                    u.userId,
+                    u.name as customerName,
+                    u.email as customerEmail,
+                    u.phoneNumber as customerPhone,
+                    u.registrationDate as customerRegistrationDate,
+                    u.isActive as customerActiveStatus,
+                    NULL as deliveryEmployeeId,
+                    NULL as deliveryCurrentLatitude,
+                    NULL as deliveryCurrentLongitude,
+                    NULL as deliveryEmployeeName,
+                    NULL as deliveryEmployeePhone,
+                    NULL as deliveryLastLocationUpdate,
+                    TIMESTAMPDIFF(MINUTE, co.createdAt, NOW()) as orderAgeMinutes,
+                    CASE 
+                        WHEN co.estimatedDeliveryTime IS NOT NULL 
+                        THEN TIMESTAMPDIFF(MINUTE, NOW(), co.estimatedDeliveryTime)
+                        ELSE NULL 
+                    END as estimatedMinutesRemaining,
+                    NULL as distanceToDestinationKm
+                FROM customerorders co
+                INNER JOIN customers c ON co.customerId = c.id
+                INNER JOIN user u ON c.userId = u.userId
+                WHERE co.status = 'on_theway'
+                ORDER BY co.createdAt DESC
+                ${limitClause} ${offsetClause}
+            `;
+        }
+
+        // Query for order items (same as before)
         const orderItemsQuery = `
             SELECT 
                 coi.orderId,
                 coi.quantity,
                 coi.Price as itemPrice,
                 coi.subtotal,
-                
-                -- Product Details
                 p.productId,
                 p.name as productName,
                 p.costPrice as productCostPrice,
@@ -2670,14 +2785,9 @@ export const getDetailedTracking = async (req, res) => {
                 p.image as productImage,
                 p.description as productDescription,
                 p.warranty as productWarranty,
-                
-                -- Category Information
                 cat.categoryID,
                 cat.categoryName,
-                
-                -- Calculate profit per item
                 (coi.Price - p.costPrice) * coi.quantity as itemProfit
-                
             FROM customerorderItems coi
             INNER JOIN product p ON coi.productId = p.productId
             LEFT JOIN category cat ON p.categoryId = cat.categoryID
@@ -2686,43 +2796,21 @@ export const getDetailedTracking = async (req, res) => {
             ORDER BY coi.orderId, p.name
         `;
 
-        // Query for order status history/timeline
-        const statusHistoryQuery = `
-            SELECT 
-                co.id as orderId,
-                co.createdAt as orderPlaced,
-                co.updatedAt as lastStatusChange,
-                co.deliveryStartTime,
-                co.deliveryEndTime,
-                co.status
-            FROM customerorders co
-            WHERE co.status = 'on_theway'
-        `;
-
-        // Query for delivery statistics and insights
+        // Query for delivery statistics
         const deliveryStatsQuery = `
             SELECT 
                 COUNT(*) as totalOnTheWayOrders,
                 AVG(co.totalCost) as averageOrderValue,
                 SUM(co.totalCost) as totalValueInTransit,
-                MIN(co.createdAt) as oldestOrderDate,
-                MAX(co.createdAt) as newestOrderDate,
-                
-                -- Payment method breakdown
                 SUM(CASE WHEN co.paymentMethod = 'cash' THEN 1 ELSE 0 END) as cashOrders,
                 SUM(CASE WHEN co.paymentMethod = 'debt' THEN 1 ELSE 0 END) as debtOrders,
                 SUM(CASE WHEN co.paymentMethod = 'partial' THEN 1 ELSE 0 END) as partialOrders,
-                
-                -- Payment status
-                SUM(CASE WHEN co.amountPaid >= co.totalCost THEN 1 ELSE 0 END) as fullyPaidOrders,
-                SUM(CASE WHEN co.amountPaid < co.totalCost THEN 1 ELSE 0 END) as partiallyPaidOrders,
                 SUM(co.totalCost - co.amountPaid) as totalOutstandingAmount
-                
             FROM customerorders co
             WHERE co.status = 'on_theway'
         `;
 
-        // Query for geographic distribution
+        // Geographic distribution query
         const geographicQuery = `
             SELECT 
                 c.address,
@@ -2737,16 +2825,9 @@ export const getDetailedTracking = async (req, res) => {
             ORDER BY ordersInArea DESC
         `;
 
-        const [
-            trackingResults,
-            itemsResults,
-            historyResults,
-            statsResults,
-            geoResults
-        ] = await Promise.all([
+        const [trackingResults, itemsResults, statsResults, geoResults] = await Promise.all([
             sequelize.query(trackingQuery, { type: sequelize.QueryTypes.SELECT }),
             includeItems === 'true' ? sequelize.query(orderItemsQuery, { type: sequelize.QueryTypes.SELECT }) : Promise.resolve([]),
-            sequelize.query(statusHistoryQuery, { type: sequelize.QueryTypes.SELECT }),
             sequelize.query(deliveryStatsQuery, { type: sequelize.QueryTypes.SELECT }),
             sequelize.query(geographicQuery, { type: sequelize.QueryTypes.SELECT })
         ]);
@@ -2784,37 +2865,21 @@ export const getDetailedTracking = async (req, res) => {
             });
         }
 
-        // Group history by orderId
-        const historyByOrder = {};
-        historyResults.forEach(history => {
-            historyByOrder[history.orderId] = {
-                timeline: {
-                    orderPlaced: history.orderPlaced,
-                    lastStatusChange: history.lastStatusChange,
-                    deliveryStarted: history.deliveryStartTime,
-                    expectedDelivery: history.deliveryEndTime
-                }
-            };
-        });
-
-        // Format comprehensive tracking data
+        // ✅ FIXED: Format tracking data with ACTUAL delivery employee location
         const detailedTracking = trackingResults.map(order => {
             const orderItems = itemsByOrder[order.orderId] || [];
-            const orderHistory = historyByOrder[order.orderId] || {};
-
-            // Calculate comprehensive order metrics
             const totalItems = orderItems.reduce((sum, item) => sum + item.quantity, 0);
             const totalProfit = orderItems.reduce((sum, item) => sum + item.profitMargin, 0);
             const averageItemValue = totalItems > 0 ? order.totalCost / totalItems : 0;
             const paymentStatus = order.amountPaid >= order.totalCost ? 'Fully Paid' : 'Partial Payment';
             const remainingAmount = Math.max(0, order.totalCost - order.amountPaid);
+            const urgencyLevel = order.orderAgeMinutes > 180 ? 'High' : order.orderAgeMinutes > 60 ? 'Medium' : 'Low';
 
-            // Calculate delivery urgency
-            const urgencyLevel = order.orderAgeMinutes > 180 ? 'High' :
-                order.orderAgeMinutes > 60 ? 'Medium' : 'Low';
+            // ✅ Check if we have delivery employee tracking data
+            const hasDeliveryTracking = !!(order.deliveryCurrentLatitude && order.deliveryCurrentLongitude);
+            const distance = parseFloat(order.distanceToDestinationKm) || null;
 
             return {
-                // Core Order Information
                 orderId: order.orderId,
                 orderMetrics: {
                     totalValue: parseFloat(order.totalCost),
@@ -2828,7 +2893,6 @@ export const getDetailedTracking = async (req, res) => {
                     profitMargin: order.totalCost > 0 ? parseFloat(((totalProfit / order.totalCost) * 100).toFixed(2)) : 0
                 },
 
-                // Order Status & Timing
                 orderStatus: {
                     current: order.currentStatus,
                     orderAge: {
@@ -2838,13 +2902,13 @@ export const getDetailedTracking = async (req, res) => {
                     },
                     urgencyLevel: urgencyLevel,
                     estimatedDelivery: {
-                        timeRemaining: null,
-                        formattedTimeRemaining: 'Not specified',
-                        isOverdue: false
+                        timeRemaining: order.estimatedMinutesRemaining,
+                        formattedTimeRemaining: order.estimatedMinutesRemaining ?
+                            formatDuration(order.estimatedMinutesRemaining) : 'Not specified',
+                        isOverdue: order.estimatedMinutesRemaining < 0
                     }
                 },
 
-                // Payment Information
                 paymentDetails: {
                     method: order.paymentMethod,
                     status: paymentStatus,
@@ -2854,7 +2918,6 @@ export const getDetailedTracking = async (req, res) => {
                     paymentPercentage: parseFloat(((order.amountPaid / order.totalCost) * 100).toFixed(1))
                 },
 
-                // Customer Information
                 customer: {
                     customerId: order.customerId,
                     userId: order.userId,
@@ -2862,7 +2925,7 @@ export const getDetailedTracking = async (req, res) => {
                         name: order.customerName,
                         email: order.customerEmail,
                         phone: order.customerPhone,
-                        role: 'customer' // Default role since all customers have this role
+                        role: 'customer'
                     },
                     accountInfo: {
                         accountBalance: parseFloat(order.customerAccountBalance) || 0,
@@ -2879,37 +2942,65 @@ export const getDetailedTracking = async (req, res) => {
                     }
                 },
 
-                // Location Data for Tracking
+                // ✅ FIXED: Show DIFFERENT locations for customer vs delivery person
                 locationData: {
                     customerLocation: {
                         latitude: parseFloat(order.customerLatitude) || null,
                         longitude: parseFloat(order.customerLongitude) || null,
                         address: order.customerAddress,
-                        addressType: 'Customer Address'
+                        addressType: 'Customer Address (Destination)'
                     },
                     deliveryLocation: {
-                        latitude: parseFloat(order.deliveryLatitude) || null,
-                        longitude: parseFloat(order.deliveryLongitude) || null,
-                        address: order.deliveryAddress,
-                        addressType: 'Delivery Address'
+                        latitude: hasDeliveryTracking ? parseFloat(order.deliveryCurrentLatitude) : null,
+                        longitude: hasDeliveryTracking ? parseFloat(order.deliveryCurrentLongitude) : null,
+                        address: hasDeliveryTracking ? 'Current Delivery Person Location' : 'No GPS Tracking',
+                        addressType: 'Delivery Employee Current Position',
+                        lastUpdate: order.deliveryLastLocationUpdate,
+                        isLiveTracking: hasDeliveryTracking
                     },
-                    sameLocation: order.customerAddress === order.deliveryAddress
+                    sameLocation: false, // They should NEVER be the same
+                    hasActiveTracking: hasDeliveryTracking,
+                    distanceApart: distance ? `${distance.toFixed(2)} km` : 'Unknown'
                 },
 
-                // Comprehensive Delivery Summary
+                // ✅ DELIVERY EMPLOYEE INFO
+                deliveryEmployee: {
+                    employeeId: order.deliveryEmployeeId,
+                    name: order.deliveryEmployeeName || 'Not Assigned',
+                    phone: order.deliveryEmployeePhone || 'N/A',
+                    currentLocation: hasDeliveryTracking ? {
+                        latitude: parseFloat(order.deliveryCurrentLatitude),
+                        longitude: parseFloat(order.deliveryCurrentLongitude),
+                        lastUpdate: order.deliveryLastLocationUpdate,
+                        distanceFromDestination: distance ? `${distance.toFixed(2)} km` : null
+                    } : null,
+                    trackingStatus: hasDeliveryTracking ? 'Live GPS Active' : 'No Location Data'
+                },
+
                 deliverySummary: {
                     destination: {
-                        address: order.deliveryAddress,
+                        address: order.customerAddress,
                         coordinates: {
-                            lat: parseFloat(order.deliveryLatitude) || null,
-                            lng: parseFloat(order.deliveryLongitude) || null
+                            lat: parseFloat(order.customerLatitude) || null,
+                            lng: parseFloat(order.customerLongitude) || null
                         }
+                    },
+                    currentDeliveryPosition: hasDeliveryTracking ? {
+                        coordinates: {
+                            lat: parseFloat(order.deliveryCurrentLatitude),
+                            lng: parseFloat(order.deliveryCurrentLongitude)
+                        },
+                        lastUpdate: order.deliveryLastLocationUpdate,
+                        distance: distance ? `${distance.toFixed(2)} km from destination` : null
+                    } : {
+                        status: 'No GPS tracking available'
                     },
                     contactInfo: {
                         primaryContact: order.customerName,
                         phoneNumber: order.customerPhone,
                         email: order.customerEmail,
-                        preferredContactMethod: 'Phone' // Could be dynamic based on customer preference
+                        deliveryPersonName: order.deliveryEmployeeName || 'Not Assigned',
+                        deliveryPersonPhone: order.deliveryEmployeePhone || 'N/A'
                     },
                     orderDetails: {
                         orderValue: parseFloat(order.totalCost),
@@ -2919,43 +3010,43 @@ export const getDetailedTracking = async (req, res) => {
                         cashOnDelivery: remainingAmount > 0 ? parseFloat(remainingAmount.toFixed(2)) : 0,
                         totalItems: totalItems,
                         productCategories: [...new Set(orderItems.map(item => item.productDetails.category.name))],
-                        specialInstructions: order.orderNotes || 'No special instructions',
+                        specialInstructions: order.orderNotes || 'Prepared',
                         urgency: urgencyLevel
                     },
                     deliveryInstructions: {
-                        notes: order.orderNotes || 'Standard delivery',
+                        notes: order.orderNotes || 'Prepared',
                         paymentInstructions: remainingAmount > 0 ?
                             `Collect $${remainingAmount.toFixed(2)} cash on delivery` :
                             'Order fully paid - no collection required',
                         contactInstructions: `Contact ${order.customerName} at ${order.customerPhone}`,
-                        addressInstructions: order.customerAddress
+                        addressInstructions: order.customerAddress,
+                        trackingInfo: hasDeliveryTracking ?
+                            `Live GPS: Delivery person is ${distance ? distance.toFixed(2) + ' km' : 'unknown distance'} from destination` :
+                            'GPS tracking not available'
                     }
                 },
 
-                // Order Timeline
                 timeline: {
                     orderPlaced: order.orderCreatedDate,
                     lastUpdated: order.orderLastUpdated,
                     deliveryStarted: order.deliveryStartTime,
                     estimatedCompletion: order.deliveryEndTime,
-                    ...orderHistory.timeline
+                    lastLocationUpdate: order.deliveryLastLocationUpdate
                 },
 
-                // Order Items (if requested)
                 items: includeItems === 'true' ? orderItems : undefined,
 
-                // Additional Metadata
                 metadata: {
                     dataGeneratedAt: new Date().toISOString(),
                     orderAgeCategory: urgencyLevel,
                     requiresAttention: urgencyLevel === 'High' || remainingAmount > 100,
-                    estimatedDeliveryStatus: 'On Time'
+                    estimatedDeliveryStatus: order.estimatedMinutesRemaining < 0 ? 'Overdue' : 'On Time',
+                    hasLiveTracking: hasDeliveryTracking,
+                    deliveryColumnUsed: deliveryJoinColumn,
+                    trackingMethod: hasDeliveryTracking ? 'live_gps' : 'destination_only'
                 }
             };
         });
-
-        // Calculate route optimization suggestions
-        const routeOptimization = calculateRouteOptimization(geoResults);
 
         return res.status(200).json({
             message: 'Comprehensive tracking data retrieved successfully',
@@ -2970,7 +3061,8 @@ export const getDetailedTracking = async (req, res) => {
                 },
                 urgencyBreakdown: calculateUrgencyBreakdown(detailedTracking),
                 geographicDistribution: geoResults.length,
-                outstandingPayments: parseFloat(deliveryStats.totalOutstandingAmount) || 0
+                outstandingPayments: parseFloat(deliveryStats.totalOutstandingAmount) || 0,
+                liveTrackingOrders: detailedTracking.filter(order => order.locationData.hasActiveTracking).length
             },
             orders: detailedTracking,
             geographicDistribution: geoResults.map(geo => ({
@@ -2982,7 +3074,6 @@ export const getDetailedTracking = async (req, res) => {
                 ordersCount: parseInt(geo.ordersInArea),
                 totalValue: parseFloat(geo.totalValueInArea)
             })),
-            routeOptimization: routeOptimization,
             pagination: page && limit ? {
                 currentPage: parseInt(page),
                 limit: parseInt(limit),
@@ -2994,7 +3085,9 @@ export const getDetailedTracking = async (req, res) => {
             metadata: {
                 includeItems: includeItems === 'true',
                 generatedAt: new Date().toISOString(),
-                responseTime: Date.now()
+                responseTime: Date.now(),
+                deliveryColumnDetected: deliveryJoinColumn,
+                trackingCapability: deliveryJoinColumn ? 'live_gps_enabled' : 'basic_tracking_only'
             }
         });
 
@@ -3008,31 +3101,20 @@ export const getDetailedTracking = async (req, res) => {
 };
 
 // Helper Functions
-
-/**
- * Format duration in minutes to human readable format
- */
 const formatDuration = (minutes) => {
     if (minutes < 60) {
         return `${minutes} minutes`;
     } else if (minutes < 1440) {
         const hours = Math.floor(minutes / 60);
         const remainingMinutes = minutes % 60;
-        return remainingMinutes > 0 ?
-            `${hours}h ${remainingMinutes}m` :
-            `${hours} hours`;
+        return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours} hours`;
     } else {
         const days = Math.floor(minutes / 1440);
         const remainingHours = Math.floor((minutes % 1440) / 60);
-        return remainingHours > 0 ?
-            `${days}d ${remainingHours}h` :
-            `${days} days`;
+        return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days} days`;
     }
 };
 
-/**
- * Calculate urgency breakdown
- */
 const calculateUrgencyBreakdown = (orders) => {
     return orders.reduce((acc, order) => {
         const urgency = order.orderStatus.urgencyLevel;
@@ -3041,9 +3123,6 @@ const calculateUrgencyBreakdown = (orders) => {
     }, { high: 0, medium: 0, low: 0 });
 };
 
-/**
- * Calculate route optimization suggestions
- */
 const calculateRouteOptimization = (geoData) => {
     const clusters = geoData.filter(geo => geo.ordersInArea > 1);
     return {
