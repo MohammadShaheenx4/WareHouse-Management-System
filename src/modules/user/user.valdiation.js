@@ -14,11 +14,7 @@ export const updateUserProfileSchema = Joi.object({
             'string.email': 'Please provide a valid email address'
         }),
 
-    phoneNumber: Joi.string().optional()
-        .pattern(/^[\+]?[1-9][\d]{0,15}$/)
-        .messages({
-            'string.pattern.base': 'Please provide a valid phone number'
-        }),
+
 
     // Password update fields
     currentPassword: Joi.string().optional(),
