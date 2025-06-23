@@ -53,19 +53,15 @@ export const getUserProfile = async (req, res) => {
  * @access  Authenticated
  */
 export const updateUserProfile = async (req, res) => {
-    const transaction = await sequelize.transaction();
-
     try {
         // Check if user object exists
         if (!req.user || !req.user.userId) {
-            await transaction.rollback();
             return res.status(401).json({ message: 'Authentication error: User not found in request' });
         }
 
-        // Validate request body
+        // Validate request body (remove transaction rollback from validation)
         const { error } = updateUserProfileSchema.validate(req.body);
         if (error) {
-            await transaction.rollback();
             return res.status(400).json({ message: error.details[0].message });
         }
 
@@ -79,84 +75,51 @@ export const updateUserProfile = async (req, res) => {
         const user = await userModel.findByPk(userId);
 
         if (!user) {
-            await transaction.rollback();
             return res.status(404).json({ message: 'User profile not found' });
         }
 
-        // Check if email is already in use by another user
+        // Check if email is already in use by another user (simplified)
         if (email && email !== user.email) {
             const existingUser = await userModel.findOne({ where: { email } });
-            if (existingUser && existingUser.userId !== userId) {
-                await transaction.rollback();
+            if (existingUser) {
                 return res.status(400).json({ message: 'Email already in use by another account' });
             }
         }
 
-        // Create update object
-        const updateData = {};
-
-        // Handle password changes
+        // Handle password changes (make it optional - only if both provided)
         if (currentPassword && newPassword) {
             // Verify current password
             const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
 
             if (!isPasswordValid) {
-                await transaction.rollback();
                 return res.status(401).json({ message: 'Current password is incorrect' });
             }
 
             // Hash new password
             const hashedPassword = await bcrypt.hash(newPassword, 10);
-            updateData.password = hashedPassword;
+            user.password = hashedPassword;
         }
 
-        // Handle file upload for profile picture
-        let profilePictureFile = null;
-
-        // Check for file in different ways based on multer configuration
+        // Handle file upload for profile picture (simplified)
         if (req.file) {
-            // If using .single('profilePicture')
-            profilePictureFile = req.file;
-        } else if (req.files) {
-            // If using .any() or .fields()
-            if (Array.isArray(req.files)) {
-                // .any() returns array
-                profilePictureFile = req.files.find(file => file.fieldname === 'profilePicture');
-            } else if (req.files.profilePicture) {
-                // .fields() returns object
-                profilePictureFile = req.files.profilePicture[0];
-            }
-        }
-
-        // Process profile picture update if file uploaded
-        if (profilePictureFile) {
             try {
-                const { secure_url } = await cloudinary.uploader.upload(profilePictureFile.path, {
+                const { secure_url } = await cloudinary.uploader.upload(req.file.path, {
                     folder: 'warehouse/profiles'
                 });
-                updateData.profilePicture = secure_url;
+                user.profilePicture = secure_url;
             } catch (cloudinaryError) {
                 console.error('Error uploading to cloudinary:', cloudinaryError);
-                await transaction.rollback();
                 return res.status(500).json({ message: 'Error uploading profile picture. Please try again.' });
             }
         }
 
-        // Process regular profile updates
-        if (name) updateData.name = name;
-        if (email) updateData.email = email;
-        if (phoneNumber) updateData.phoneNumber = phoneNumber;
+        // Process regular profile updates (direct assignment like your working function)
+        if (name) user.name = name;
+        if (email) user.email = email;
+        if (phoneNumber) user.phoneNumber = phoneNumber;
 
-        // Apply updates if there are any changes
-        if (Object.keys(updateData).length === 0 && !profilePictureFile) {
-            await transaction.rollback();
-            return res.status(400).json({ message: 'No updates provided' });
-        }
-
-        await user.update(updateData, { transaction });
-
-        // Commit the transaction
-        await transaction.commit();
+        // Save the updated user (simple approach that works)
+        await user.save();
 
         // Get updated user profile (excluding password)
         const updatedUser = await userModel.findByPk(userId, {
@@ -169,14 +132,13 @@ export const updateUserProfile = async (req, res) => {
         // Prepare response message
         let successMessage = 'Profile updated successfully';
         if (currentPassword && newPassword) successMessage += ' with password change';
-        if (profilePictureFile) successMessage += ' with new profile picture';
+        if (req.file) successMessage += ' with new profile picture';
 
         return res.status(200).json({
             message: successMessage,
             user: updatedUser
         });
     } catch (error) {
-        await transaction.rollback();
         console.error('Error updating user profile:', error);
         return res.status(500).json({ message: 'Internal server error' });
     }

@@ -14,7 +14,13 @@ export const updateUserProfileSchema = Joi.object({
             'string.email': 'Please provide a valid email address'
         }),
 
-
+    // ADD THIS - Phone number validation
+    phoneNumber: Joi.string().pattern(/^[0-9+\-\s()]*$/).min(10).max(20).optional()
+        .messages({
+            'string.pattern.base': 'Phone number can only contain numbers, +, -, spaces, and parentheses',
+            'string.min': 'Phone number must be at least 10 characters',
+            'string.max': 'Phone number cannot exceed 20 characters'
+        }),
 
     // Password update fields
     currentPassword: Joi.string().optional(),
