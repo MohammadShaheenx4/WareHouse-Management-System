@@ -33,7 +33,7 @@ export const createProduct = async (req, res) => {
             name, costPrice, sellPrice, quantity,
             categoryId, categoryName, status = 'Active', barcode,
             warranty, prodDate, expDate, description,
-            supplierIds, supplierNames, lowStock = 10 // Add lowStock with default value
+            supplierIds, supplierNames, lowStock = 10, unit // Add unit field
         } = req.body;
 
         // Check for duplicate barcode if provided
@@ -173,6 +173,7 @@ export const createProduct = async (req, res) => {
             sellPrice,
             quantity,
             lowStock: lowStock || 10, // Include lowStock field
+            unit: unit || null, // Include unit field
             categoryId,
             status,
             barcode: barcode || null,
@@ -250,235 +251,6 @@ export const createProduct = async (req, res) => {
 };
 
 /**
- * @desc    Get all products
- * @route   GET /api/products
- * @access  Public
- */
-export const getAllProducts = async (req, res) => {
-    try {
-        // Get query parameters for filtering
-        const {
-            name,
-            minPrice,
-            maxPrice,
-            category, // This can be either category name or ID
-            supplier, // This can be either supplier name or ID
-            status,
-            inStock
-        } = req.query;
-
-        // Build filter object
-        const filter = {};
-
-        if (name) {
-            filter.name = { [Op.like]: `%${name}%` };
-        }
-
-        if (minPrice || maxPrice) {
-            filter.sellPrice = {};
-            if (minPrice) filter.sellPrice[Op.gte] = minPrice;
-            if (maxPrice) filter.sellPrice[Op.lte] = maxPrice;
-        }
-
-        // Handle category filtering by name or ID
-        if (category) {
-            // Check if category is a number (ID) or string (name)
-            if (!isNaN(category)) {
-                // If it's a number, filter by categoryId
-                filter.categoryId = category;
-            } else {
-                // If it's a string, find the category by name first
-                const categoryObj = await categoryModel.findOne({
-                    where: { categoryName: category }
-                });
-
-                if (categoryObj) {
-                    filter.categoryId = categoryObj.categoryID;
-                } else {
-                    // If category name doesn't exist, return empty result
-                    return res.status(200).json({
-                        message: 'Products retrieved successfully',
-                        count: 0,
-                        products: []
-                    });
-                }
-            }
-        }
-
-        if (status) {
-            filter.status = status;
-        }
-
-        if (inStock === 'true') {
-            filter.quantity = { [Op.gt]: 0 };
-        }
-
-        // Handle supplier filtering
-        if (supplier) {
-            let productIds = [];
-
-            // Check if supplier parameter is a number (ID) or string (name)
-            if (!isNaN(supplier)) {
-                // It's an ID, find products directly from junction table
-                const productSuppliers = await productSupplierModel.findAll({
-                    where: { supplierId: parseInt(supplier) },
-                    attributes: ['productId']
-                });
-
-                if (productSuppliers.length === 0) {
-                    // No products with this supplier, return empty result
-                    return res.status(200).json({
-                        message: 'Products retrieved successfully',
-                        count: 0,
-                        products: []
-                    });
-                }
-
-                productIds = productSuppliers.map(ps => ps.productId);
-            } else {
-                // It's a name, find the users with this name first
-                const users = await userModel.findAll({
-                    where: { name: { [Op.like]: `%${supplier}%` } }
-                });
-
-                if (users.length === 0) {
-                    // No users with this name, return empty result
-                    return res.status(200).json({
-                        message: 'Products retrieved successfully',
-                        count: 0,
-                        products: []
-                    });
-                }
-
-                // Find suppliers with these user IDs
-                const suppliers = await supplierModel.findAll({
-                    where: { userId: { [Op.in]: users.map(user => user.userId) } }
-                });
-
-                if (suppliers.length === 0) {
-                    // No suppliers for these users, return empty result
-                    return res.status(200).json({
-                        message: 'Products retrieved successfully',
-                        count: 0,
-                        products: []
-                    });
-                }
-
-                // Find products for these suppliers
-                const productSuppliers = await productSupplierModel.findAll({
-                    where: { supplierId: { [Op.in]: suppliers.map(s => s.id) } },
-                    attributes: ['productId']
-                });
-
-                if (productSuppliers.length === 0) {
-                    // No products with these suppliers, return empty result
-                    return res.status(200).json({
-                        message: 'Products retrieved successfully',
-                        count: 0,
-                        products: []
-                    });
-                }
-
-                productIds = productSuppliers.map(ps => ps.productId);
-            }
-
-            // Add product IDs to filter
-            filter.productId = { [Op.in]: productIds };
-        }
-
-        // Prepare include options for associations
-        const includeOptions = [
-            {
-                model: categoryModel,
-                as: 'category',
-                attributes: ['categoryID', 'categoryName']
-            },
-            {
-                model: supplierModel,
-                as: 'suppliers',
-                attributes: ['id', 'userId', 'accountBalance'],
-                through: { attributes: [] }, // Don't include join table attributes
-                include: [
-                    {
-                        model: userModel,
-                        as: 'user',
-                        attributes: ['userId', 'name', 'email', 'phoneNumber']
-                    }
-                ]
-            }
-        ];
-
-        // Get products with category and supplier information
-        const products = await productModel.findAll({
-            where: filter,
-            include: includeOptions
-        });
-
-        return res.status(200).json({
-            message: 'Products retrieved successfully',
-            count: products.length,
-            products
-        });
-    } catch (error) {
-        console.error('Error fetching products:', error);
-        return res.status(500).json({ message: 'Internal server error' });
-    }
-};
-
-/**
- * @desc    Get product by ID
- * @route   GET /api/products/:id
- * @access  Public
- */
-export const getProductById = async (req, res) => {
-    try {
-        // Validate ID parameter
-        const { error } = validateProductId.validate({ id: req.params.id });
-        if (error) {
-            return res.status(400).json({ message: error.details[0].message });
-        }
-
-        const productId = req.params.id;
-
-        // Get product with category and supplier information
-        const product = await productModel.findByPk(productId, {
-            include: [
-                {
-                    model: categoryModel,
-                    as: 'category',
-                    attributes: ['categoryID', 'categoryName']
-                },
-                {
-                    model: supplierModel,
-                    as: 'suppliers',
-                    attributes: ['id', 'userId', 'accountBalance'],
-                    through: { attributes: [] }, // Don't include join table attributes
-                    include: [
-                        {
-                            model: userModel,
-                            as: 'user',
-                            attributes: ['userId', 'name', 'email', 'phoneNumber']
-                        }
-                    ]
-                }
-            ]
-        });
-
-        if (!product) {
-            return res.status(404).json({ message: 'Product not found' });
-        }
-
-        return res.status(200).json({
-            message: 'Product retrieved successfully',
-            product
-        });
-    } catch (error) {
-        console.error('Error fetching product:', error);
-        return res.status(500).json({ message: 'Internal server error' });
-    }
-};
-
-/**
  * @desc    Update product
  * @route   PUT /api/products/:id
  * @access  Admin
@@ -516,7 +288,7 @@ export const updateProduct = async (req, res) => {
             name, costPrice, sellPrice, quantity,
             categoryId, categoryName, status, barcode,
             warranty, prodDate, expDate, description,
-            supplierIds, supplierNames, lowStock // Add lowStock field
+            supplierIds, supplierNames, lowStock, unit // Add unit field
         } = req.body;
 
         // Convert supplierNames to array if it's not
@@ -557,6 +329,7 @@ export const updateProduct = async (req, res) => {
             ...(sellPrice !== undefined && { sellPrice }),
             ...(quantity !== undefined && { quantity }),
             ...(lowStock !== undefined && { lowStock }), // Include lowStock field
+            ...(unit !== undefined && { unit }), // Include unit field
             ...(categoryId !== undefined && { categoryId }),
             ...(status !== undefined && { status }),
             ...(barcode !== undefined && { barcode }),
@@ -732,11 +505,226 @@ export const updateProduct = async (req, res) => {
     }
 };
 
-/**
- * @desc    Delete product
- * @route   DELETE /api/products/:id
- * @access  Admin
- */
+// Keep all other existing methods unchanged
+export const getAllProducts = async (req, res) => {
+    try {
+        // Get query parameters for filtering
+        const {
+            name,
+            minPrice,
+            maxPrice,
+            category, // This can be either category name or ID
+            supplier, // This can be either supplier name or ID
+            status,
+            inStock
+        } = req.query;
+
+        // Build filter object
+        const filter = {};
+
+        if (name) {
+            filter.name = { [Op.like]: `%${name}%` };
+        }
+
+        if (minPrice || maxPrice) {
+            filter.sellPrice = {};
+            if (minPrice) filter.sellPrice[Op.gte] = minPrice;
+            if (maxPrice) filter.sellPrice[Op.lte] = maxPrice;
+        }
+
+        // Handle category filtering by name or ID
+        if (category) {
+            // Check if category is a number (ID) or string (name)
+            if (!isNaN(category)) {
+                // If it's a number, filter by categoryId
+                filter.categoryId = category;
+            } else {
+                // If it's a string, find the category by name first
+                const categoryObj = await categoryModel.findOne({
+                    where: { categoryName: category }
+                });
+
+                if (categoryObj) {
+                    filter.categoryId = categoryObj.categoryID;
+                } else {
+                    // If category name doesn't exist, return empty result
+                    return res.status(200).json({
+                        message: 'Products retrieved successfully',
+                        count: 0,
+                        products: []
+                    });
+                }
+            }
+        }
+
+        if (status) {
+            filter.status = status;
+        }
+
+        if (inStock === 'true') {
+            filter.quantity = { [Op.gt]: 0 };
+        }
+
+        // Handle supplier filtering
+        if (supplier) {
+            let productIds = [];
+
+            // Check if supplier parameter is a number (ID) or string (name)
+            if (!isNaN(supplier)) {
+                // It's an ID, find products directly from junction table
+                const productSuppliers = await productSupplierModel.findAll({
+                    where: { supplierId: parseInt(supplier) },
+                    attributes: ['productId']
+                });
+
+                if (productSuppliers.length === 0) {
+                    // No products with this supplier, return empty result
+                    return res.status(200).json({
+                        message: 'Products retrieved successfully',
+                        count: 0,
+                        products: []
+                    });
+                }
+
+                productIds = productSuppliers.map(ps => ps.productId);
+            } else {
+                // It's a name, find the users with this name first
+                const users = await userModel.findAll({
+                    where: { name: { [Op.like]: `%${supplier}%` } }
+                });
+
+                if (users.length === 0) {
+                    // No users with this name, return empty result
+                    return res.status(200).json({
+                        message: 'Products retrieved successfully',
+                        count: 0,
+                        products: []
+                    });
+                }
+
+                // Find suppliers with these user IDs
+                const suppliers = await supplierModel.findAll({
+                    where: { userId: { [Op.in]: users.map(user => user.userId) } }
+                });
+
+                if (suppliers.length === 0) {
+                    // No suppliers for these users, return empty result
+                    return res.status(200).json({
+                        message: 'Products retrieved successfully',
+                        count: 0,
+                        products: []
+                    });
+                }
+
+                // Find products for these suppliers
+                const productSuppliers = await productSupplierModel.findAll({
+                    where: { supplierId: { [Op.in]: suppliers.map(s => s.id) } },
+                    attributes: ['productId']
+                });
+
+                if (productSuppliers.length === 0) {
+                    // No products with these suppliers, return empty result
+                    return res.status(200).json({
+                        message: 'Products retrieved successfully',
+                        count: 0,
+                        products: []
+                    });
+                }
+
+                productIds = productSuppliers.map(ps => ps.productId);
+            }
+
+            // Add product IDs to filter
+            filter.productId = { [Op.in]: productIds };
+        }
+
+        // Prepare include options for associations
+        const includeOptions = [
+            {
+                model: categoryModel,
+                as: 'category',
+                attributes: ['categoryID', 'categoryName']
+            },
+            {
+                model: supplierModel,
+                as: 'suppliers',
+                attributes: ['id', 'userId', 'accountBalance'],
+                through: { attributes: [] }, // Don't include join table attributes
+                include: [
+                    {
+                        model: userModel,
+                        as: 'user',
+                        attributes: ['userId', 'name', 'email', 'phoneNumber']
+                    }
+                ]
+            }
+        ];
+
+        // Get products with category and supplier information
+        const products = await productModel.findAll({
+            where: filter,
+            include: includeOptions
+        });
+
+        return res.status(200).json({
+            message: 'Products retrieved successfully',
+            count: products.length,
+            products
+        });
+    } catch (error) {
+        console.error('Error fetching products:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+export const getProductById = async (req, res) => {
+    try {
+        // Validate ID parameter
+        const { error } = validateProductId.validate({ id: req.params.id });
+        if (error) {
+            return res.status(400).json({ message: error.details[0].message });
+        }
+
+        const productId = req.params.id;
+
+        // Get product with category and supplier information
+        const product = await productModel.findByPk(productId, {
+            include: [
+                {
+                    model: categoryModel,
+                    as: 'category',
+                    attributes: ['categoryID', 'categoryName']
+                },
+                {
+                    model: supplierModel,
+                    as: 'suppliers',
+                    attributes: ['id', 'userId', 'accountBalance'],
+                    through: { attributes: [] }, // Don't include join table attributes
+                    include: [
+                        {
+                            model: userModel,
+                            as: 'user',
+                            attributes: ['userId', 'name', 'email', 'phoneNumber']
+                        }
+                    ]
+                }
+            ]
+        });
+
+        if (!product) {
+            return res.status(404).json({ message: 'Product not found' });
+        }
+
+        return res.status(200).json({
+            message: 'Product retrieved successfully',
+            product
+        });
+    } catch (error) {
+        console.error('Error fetching product:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
 export const deleteProduct = async (req, res) => {
     try {
         // Validate ID parameter
@@ -764,11 +752,6 @@ export const deleteProduct = async (req, res) => {
     }
 };
 
-/**
- * @desc    Get low stock products
- * @route   GET /api/products/low-stock
- * @access  Admin
- */
 export const getLowStockProducts = async (req, res) => {
     try {
         // Default threshold is 10, can be changed via query parameter
@@ -813,12 +796,6 @@ export const getLowStockProducts = async (req, res) => {
     }
 };
 
-
-/**
- * @desc    Get dashboard statistics
- * @route   GET /api/stats/dashboard
- * @access  Admin
- */
 export const getDashboardStats = async (req, res) => {
     try {
         // Run all queries in parallel for better performance

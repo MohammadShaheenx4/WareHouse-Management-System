@@ -25,6 +25,12 @@ const productModel = sequelize.define('Product', {
         allowNull: false,
         defaultValue: 0,
     },
+    unit: {
+        type: DataTypes.STRING(100),
+        allowNull: true,
+        defaultValue: null,
+        comment: 'Unit of measurement for the product (e.g., 24/kg, Carton/24, pcs, etc.)'
+    },
     categoryId: {
         type: DataTypes.INTEGER,
         allowNull: false,

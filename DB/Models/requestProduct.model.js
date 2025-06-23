@@ -21,6 +21,12 @@ const requestProductModel = sequelize.define('RequestProduct', {
         type: DataTypes.FLOAT,
         allowNull: false,
     },
+    unit: {
+        type: DataTypes.STRING(100),
+        allowNull: true,
+        defaultValue: null,
+        comment: 'Unit of measurement for the product (e.g., 24/kg, Carton/24, pcs, etc.)'
+    },
     categoryId: {
         type: DataTypes.INTEGER,
         allowNull: false,

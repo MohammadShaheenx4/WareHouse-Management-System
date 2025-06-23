@@ -39,7 +39,7 @@ export const createProductRequest = async (req, res) => {
         const {
             name, costPrice, sellPrice,
             categoryId, categoryName, barcode,
-            warranty, prodDate, expDate, description
+            warranty, prodDate, expDate, description, unit // Add unit field
         } = req.body;
 
         // Check if user object exists
@@ -96,6 +96,7 @@ export const createProductRequest = async (req, res) => {
             name,
             costPrice,
             sellPrice,
+            unit: unit || null, // Include unit field
             categoryId: finalCategoryId,
             supplierId: supplier.id,
             barcode: barcode || null,
@@ -115,7 +116,7 @@ export const createProductRequest = async (req, res) => {
         }
 
         // Get the created request with associations
-        const createdRequest = await requestProductModel.findByPk(productRequest.requestId, {
+        const createdRequest = await requestProductModel.findByPk(productRequest.id, {
             include: [
                 {
                     model: categoryModel,
@@ -143,111 +144,6 @@ export const createProductRequest = async (req, res) => {
         });
     } catch (error) {
         console.error('Error creating product request:', error);
-        return res.status(500).json({ message: 'Internal server error' });
-    }
-};
-
-/**
- * @desc    Get all product requests (with filters)
- * @route   GET /api/product-requests
- * @access  Admin
- */
-export const getProductRequests = async (req, res) => {
-    try {
-        const { status, supplierId } = req.query;
-        const where = {};
-
-        if (status) {
-            where.status = status;
-        }
-
-        if (supplierId) {
-            where.supplierId = supplierId;
-        }
-
-        const productRequests = await requestProductModel.findAll({
-            where,
-            include: [
-                {
-                    model: categoryModel,
-                    as: 'category',
-                    attributes: ['categoryID', 'categoryName']
-                },
-                {
-                    model: supplierModel,
-                    as: 'supplier',
-                    attributes: ['id', 'userId', 'accountBalance'],
-                    include: [
-                        {
-                            model: userModel,
-                            as: 'user',
-                            attributes: ['userId', 'name', 'email']
-                        }
-                    ]
-                }
-            ],
-            order: [['createdAt', 'DESC']]
-        });
-
-        return res.status(200).json({
-            message: 'Product requests retrieved successfully',
-            productRequests
-        });
-    } catch (error) {
-        console.error('Error getting product requests:', error);
-        return res.status(500).json({ message: 'Internal server error' });
-    }
-};
-
-/**
- * @desc    Get single product request by ID
- * @route   GET /api/product-requests/:requestId
- * @access  Admin/Supplier
- */
-export const getProductRequestById = async (req, res) => {
-    try {
-        const { error } = validateRequestId.validate(req.params);
-        if (error) {
-            return res.status(400).json({ message: error.details[0].message });
-        }
-
-        const productRequest = await requestProductModel.findByPk(req.params.requestId, {
-            include: [
-                {
-                    model: categoryModel,
-                    as: 'category',
-                    attributes: ['categoryID', 'categoryName']
-                },
-                {
-                    model: supplierModel,
-                    as: 'supplier',
-                    attributes: ['id', 'userId', 'accountBalance'],
-                    include: [
-                        {
-                            model: userModel,
-                            as: 'user',
-                            attributes: ['userId', 'name', 'email']
-                        }
-                    ]
-                }
-            ]
-        });
-
-        if (!productRequest) {
-            return res.status(404).json({ message: 'Product request not found' });
-        }
-
-        // Check if supplier can only view their own requests
-        if (req.supplier && req.supplier.id !== productRequest.supplierId) {
-            return res.status(403).json({ message: 'Access denied' });
-        }
-
-        return res.status(200).json({
-            message: 'Product request retrieved successfully',
-            productRequest
-        });
-    } catch (error) {
-        console.error('Error getting product request:', error);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
@@ -298,6 +194,7 @@ export const updateProductRequestStatus = async (req, res) => {
                 costPrice: productRequest.costPrice,
                 sellPrice: productRequest.sellPrice,
                 quantity: 0, // Default quantity as per requirement
+                unit: productRequest.unit, // Include unit field from request
                 categoryId: productRequest.categoryId,
                 status: 'Active',
                 barcode: productRequest.barcode,
@@ -350,11 +247,102 @@ export const updateProductRequestStatus = async (req, res) => {
     }
 };
 
-/**
- * @desc    Delete product request
- * @route   DELETE /api/product-requests/:requestId
- * @access  Admin/Supplier (only pending requests)
- */
+// Keep all other existing methods unchanged
+export const getProductRequests = async (req, res) => {
+    try {
+        const { status, supplierId } = req.query;
+        const where = {};
+
+        if (status) {
+            where.status = status;
+        }
+
+        if (supplierId) {
+            where.supplierId = supplierId;
+        }
+
+        const productRequests = await requestProductModel.findAll({
+            where,
+            include: [
+                {
+                    model: categoryModel,
+                    as: 'category',
+                    attributes: ['categoryID', 'categoryName']
+                },
+                {
+                    model: supplierModel,
+                    as: 'supplier',
+                    attributes: ['id', 'userId', 'accountBalance'],
+                    include: [
+                        {
+                            model: userModel,
+                            as: 'user',
+                            attributes: ['userId', 'name', 'email']
+                        }
+                    ]
+                }
+            ],
+            order: [['createdAt', 'DESC']]
+        });
+
+        return res.status(200).json({
+            message: 'Product requests retrieved successfully',
+            productRequests
+        });
+    } catch (error) {
+        console.error('Error getting product requests:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+export const getProductRequestById = async (req, res) => {
+    try {
+        const { error } = validateRequestId.validate(req.params);
+        if (error) {
+            return res.status(400).json({ message: error.details[0].message });
+        }
+
+        const productRequest = await requestProductModel.findByPk(req.params.requestId, {
+            include: [
+                {
+                    model: categoryModel,
+                    as: 'category',
+                    attributes: ['categoryID', 'categoryName']
+                },
+                {
+                    model: supplierModel,
+                    as: 'supplier',
+                    attributes: ['id', 'userId', 'accountBalance'],
+                    include: [
+                        {
+                            model: userModel,
+                            as: 'user',
+                            attributes: ['userId', 'name', 'email']
+                        }
+                    ]
+                }
+            ]
+        });
+
+        if (!productRequest) {
+            return res.status(404).json({ message: 'Product request not found' });
+        }
+
+        // Check if supplier can only view their own requests
+        if (req.supplier && req.supplier.id !== productRequest.supplierId) {
+            return res.status(403).json({ message: 'Access denied' });
+        }
+
+        return res.status(200).json({
+            message: 'Product request retrieved successfully',
+            productRequest
+        });
+    } catch (error) {
+        console.error('Error getting product request:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
 export const deleteProductRequest = async (req, res) => {
     try {
         const { error } = validateRequestId.validate(req.params);
@@ -394,11 +382,6 @@ export const deleteProductRequest = async (req, res) => {
     }
 };
 
-/**
- * @desc    Get all product requests for a specific supplier
- * @route   GET /api/product-requests/supplier/:supplierId
- * @access  Admin/Supplier (own requests only)
- */
 export const getSupplierProductRequests = async (req, res) => {
     try {
         const { supplierId } = req.params;
@@ -447,12 +430,12 @@ export const getSupplierProductRequests = async (req, res) => {
                 id: plainRequest.id,
                 name: plainRequest.name,
                 image: plainRequest.image,
+                unit: plainRequest.unit, // Include unit field in response
                 categoryName: plainRequest.category ? plainRequest.category.categoryName : null,
                 status: plainRequest.status,
                 costPrice: plainRequest.costPrice,
                 createdAt: plainRequest.createdAt,
                 adminNote: plainRequest.adminNote
-
             };
         });
 

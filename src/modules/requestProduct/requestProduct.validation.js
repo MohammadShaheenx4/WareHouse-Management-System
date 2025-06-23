@@ -4,6 +4,11 @@ export const createRequestProductSchema = Joi.object({
     name: Joi.string().max(255).required(),
     costPrice: Joi.number().positive().required(),
     sellPrice: Joi.number().positive().required(),
+    unit: Joi.string().max(100).allow('', null)
+        .messages({
+            'string.base': 'Unit must be a string',
+            'string.max': 'Unit cannot exceed 100 characters'
+        }),
     categoryId: Joi.number().integer().positive().allow(null),
     categoryName: Joi.string().max(255).allow(null),
     barcode: Joi.string().max(255).allow(null),

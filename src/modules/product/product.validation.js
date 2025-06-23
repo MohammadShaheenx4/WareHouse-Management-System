@@ -28,6 +28,11 @@ export const createProductSchema = Joi.object({
             'number.min': 'Quantity cannot be negative',
             'any.required': 'Quantity is required'
         }),
+    unit: Joi.string().max(100).allow('', null)
+        .messages({
+            'string.base': 'Unit must be a string',
+            'string.max': 'Unit cannot exceed 100 characters'
+        }),
     // Allow either categoryId or categoryName
     categoryId: Joi.number().integer().positive()
         .messages({
@@ -118,6 +123,11 @@ export const updateProductSchema = Joi.object({
             'number.base': 'Quantity must be a number',
             'number.integer': 'Quantity must be an integer',
             'number.min': 'Quantity cannot be negative'
+        }),
+    unit: Joi.string().max(100).allow('', null)
+        .messages({
+            'string.base': 'Unit must be a string',
+            'string.max': 'Unit cannot exceed 100 characters'
         }),
     // Allow either categoryId or categoryName
     categoryId: Joi.number().integer().positive()
