@@ -496,7 +496,7 @@ export const receiveSupplierOrder = async (req, res) => {
         }
 
         const orderId = req.params.id;
-        const { status, note, items } = req.body;
+        const { status, note, items, prodDate, expDate } = req.body; // Extract top-level dates
 
         // Check if user is a warehouse employee
         const warehouseEmployee = await warehouseEmployeeModel.findOne({
@@ -548,7 +548,7 @@ export const receiveSupplierOrder = async (req, res) => {
         // Collect batch alerts for all items being received
         const batchAlerts = [];
 
-        // Process received quantities and create batches
+        // Process received quantities and update order items if provided
         if (items && items.length > 0) {
             for (const item of items) {
                 const orderItem = orderItemMap[item.id];
@@ -557,17 +557,44 @@ export const receiveSupplierOrder = async (req, res) => {
                     continue; // Skip if item not found in order
                 }
 
-                // If receivedQuantity is specified and different from ordered quantity
-                if (item.receivedQuantity !== undefined &&
-                    item.receivedQuantity !== null &&
-                    item.receivedQuantity !== orderItem.quantity) {
+                const updateData = {};
 
-                    // Update the received quantity
-                    await orderItem.update({
-                        receivedQuantity: item.receivedQuantity,
-                        // Adjust subtotal if quantity is different
-                        subtotal: orderItem.costPrice * item.receivedQuantity
-                    }, { transaction });
+                // Update received quantity if specified
+                if (item.receivedQuantity !== undefined && item.receivedQuantity !== null) {
+                    updateData.receivedQuantity = item.receivedQuantity;
+                    updateData.subtotal = orderItem.costPrice * item.receivedQuantity;
+                }
+
+                // Update production date - priority: item-level > top-level > existing
+                if (item.prodDate !== undefined) {
+                    updateData.prodDate = item.prodDate;
+                } else if (prodDate !== undefined) {
+                    updateData.prodDate = prodDate;
+                }
+
+                // Update expiry date - priority: item-level > top-level > existing
+                if (item.expDate !== undefined) {
+                    updateData.expDate = item.expDate;
+                } else if (expDate !== undefined) {
+                    updateData.expDate = expDate;
+                }
+
+                // Update the order item if there are changes
+                if (Object.keys(updateData).length > 0) {
+                    await orderItem.update(updateData, { transaction });
+                }
+            }
+        } else {
+            // If no items array provided, apply top-level dates to all order items
+            if (prodDate !== undefined || expDate !== undefined) {
+                for (const item of order.items) {
+                    const updateData = {};
+                    if (prodDate !== undefined) updateData.prodDate = prodDate;
+                    if (expDate !== undefined) updateData.expDate = expDate;
+
+                    if (Object.keys(updateData).length > 0) {
+                        await item.update(updateData, { transaction });
+                    }
                 }
             }
         }
@@ -584,11 +611,15 @@ export const receiveSupplierOrder = async (req, res) => {
                         item.receivedQuantity !== null) ?
                         item.receivedQuantity : item.quantity;
 
+                    // Get the dates to use (updated item dates or fallback to top-level dates)
+                    const itemProdDate = item.prodDate || prodDate || null;
+                    const itemExpDate = item.expDate || expDate || null;
+
                     // Check for existing batches with different dates
                     const batchCheck = await checkExistingBatches(
                         item.productId,
-                        item.prodDate,
-                        item.expDate
+                        itemProdDate,
+                        itemExpDate
                     );
 
                     if (batchCheck.hasAlert) {
@@ -600,8 +631,8 @@ export const receiveSupplierOrder = async (req, res) => {
                             existingBatches: batchCheck.existingBatches,
                             newBatch: {
                                 quantity: quantityToAdd,
-                                prodDate: item.prodDate,
-                                expDate: item.expDate
+                                prodDate: itemProdDate,
+                                expDate: itemExpDate
                             }
                         });
                     }
@@ -610,8 +641,8 @@ export const receiveSupplierOrder = async (req, res) => {
                     await createProductBatch({
                         productId: item.productId,
                         quantity: quantityToAdd,
-                        prodDate: item.prodDate,
-                        expDate: item.expDate,
+                        prodDate: itemProdDate,
+                        expDate: itemExpDate,
                         supplierId: order.supplierId,
                         supplierOrderId: order.id,
                         costPrice: item.costPrice,
@@ -625,12 +656,12 @@ export const receiveSupplierOrder = async (req, res) => {
                         quantity: newQuantity
                     }, { transaction });
 
-                    // Update production and expiration dates on product if they were set on the order item
+                    // Update production and expiration dates on product if they were set
                     // (Note: This might not be ideal if you have multiple batches with different dates)
-                    if (item.prodDate || item.expDate) {
+                    if (itemProdDate || itemExpDate) {
                         const updateData = {};
-                        if (item.prodDate) updateData.prodDate = item.prodDate;
-                        if (item.expDate) updateData.expDate = item.expDate;
+                        if (itemProdDate) updateData.prodDate = itemProdDate;
+                        if (itemExpDate) updateData.expDate = itemExpDate;
 
                         await product.update(updateData, { transaction });
                     }

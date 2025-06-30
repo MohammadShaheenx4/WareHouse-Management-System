@@ -11,6 +11,17 @@ export const prepareCustomerOrderSchema = Joi.object({
 export const receiveSupplierOrderSchema = Joi.object({
     status: Joi.string().valid('Delivered').required(),
     note: Joi.string().allow('', null),
+    // Add prodDate and expDate at the top level for all items
+    prodDate: Joi.date().iso().allow(null).optional()
+        .messages({
+            'date.base': 'Production date must be a valid date',
+            'date.format': 'Production date must be in ISO format (YYYY-MM-DD)'
+        }),
+    expDate: Joi.date().iso().allow(null).optional()
+        .messages({
+            'date.base': 'Expiry date must be a valid date',
+            'date.format': 'Expiry date must be in ISO format (YYYY-MM-DD)'
+        }),
     items: Joi.array().items(
         Joi.object({
             id: Joi.number().integer().positive().required(),
@@ -76,6 +87,42 @@ export const receiveSupplierOrderSchema = Joi.object({
                     });
                 }
             }
+        }
+    }
+
+    // Validate top-level dates too
+    if (value.prodDate && value.expDate) {
+        const prodDate = new Date(value.prodDate);
+        const expDate = new Date(value.expDate);
+
+        if (expDate <= prodDate) {
+            return helpers.error('any.custom', {
+                message: 'Expiry date must be after production date'
+            });
+        }
+    }
+
+    if (value.prodDate) {
+        const prodDate = new Date(value.prodDate);
+        const today = new Date();
+        today.setHours(23, 59, 59, 999);
+
+        if (prodDate > today) {
+            return helpers.error('any.custom', {
+                message: 'Production date cannot be in the future'
+            });
+        }
+    }
+
+    if (value.expDate) {
+        const expDate = new Date(value.expDate);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        if (expDate < today) {
+            return helpers.error('any.custom', {
+                message: 'Expiry date cannot be in the past'
+            });
         }
     }
 
