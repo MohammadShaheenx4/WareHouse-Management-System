@@ -9,7 +9,8 @@ import {
     getOrderActivityLogs,
     getProfile,
     getCustomerOrderById,
-    getSupplierOrderById
+    getSupplierOrderById,
+    getExpiringProducts
 } from "./worker.controller.js";
 import Auth from "../../middleware/authMiddleware.js";
 
@@ -42,6 +43,9 @@ router.get("/supplier-orders/:id", Auth.isAuthenticated, getSupplierOrderById);
 router.put("/customer-orders/:id", Auth.isAuthenticated, updateCustomerOrderStatus);
 router.put("/supplier-orders/:id", Auth.isAuthenticated, receiveSupplierOrder);
 router.get("/orders-history", Auth.isAuthenticated, getOrdersHistory);
+
+// New route for batch management
+router.get("/expiring-products", Auth.isAuthenticated, getExpiringProducts);
 
 // Admin-only routes - for viewing detailed logs
 router.get("/order-logs/:id", Auth.isAuthenticated, getOrderActivityLogs);

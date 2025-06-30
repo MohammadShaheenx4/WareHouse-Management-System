@@ -10,12 +10,20 @@ import supplierOrderItemModel from "../../../DB/Models/supplierOrderItem.model.j
 import supplierModel from "../../../DB/Models/supplier.model.js";
 import productModel from "../../../DB/Models/product.model.js";
 import userModel from "../../../DB/Models/user.model.js";
+import productBatchModel from "../../../DB/Models/productPatch.model.js";
 import { Op } from "sequelize";
 import {
     prepareCustomerOrderSchema,
     receiveSupplierOrderSchema,
     validateOrderId
 } from "./worker.validation.js";
+import {
+    checkExistingBatches,
+    createProductBatch,
+    getFIFOAllocation,
+    updateBatchQuantities,
+    getExpiringBatches
+} from "../../utils/batchManagement.js";
 
 // Create log entry for order activity
 const createActivityLog = async (userId, orderType, orderId, action, previousStatus, newStatus, note, transaction) => {
@@ -73,9 +81,6 @@ export const getPendingCustomerOrders = async (req, res) => {
             ],
             order: [['createdAt', 'ASC']] // Oldest first
         });
-
-        // Remove logging for list view to avoid null orderId issue
-        // await createActivityLog(...) - removed
 
         return res.status(200).json({
             count: pendingOrders.length,
@@ -139,7 +144,8 @@ export const getPendingSupplierOrders = async (req, res) => {
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
-// Get customer order by ID with logging
+
+// Get customer order by ID with FIFO allocation alerts
 export const getCustomerOrderById = async (req, res) => {
     try {
         // Validate ID parameter
@@ -188,7 +194,17 @@ export const getCustomerOrderById = async (req, res) => {
             return res.status(404).json({ message: 'Order not found' });
         }
 
-        // Now we can log this view since we have a valid orderId
+        // Get FIFO allocation alerts for each product
+        const itemsWithAlerts = [];
+        for (const item of order.items) {
+            const fifoInfo = await getFIFOAllocation(item.productId, item.quantity);
+            itemsWithAlerts.push({
+                ...item.get({ plain: true }),
+                fifoInfo
+            });
+        }
+
+        // Log the activity
         await createActivityLog(
             req.user.userId,
             'customer',
@@ -200,7 +216,12 @@ export const getCustomerOrderById = async (req, res) => {
             null
         );
 
-        return res.status(200).json({ order });
+        return res.status(200).json({
+            order: {
+                ...order.get({ plain: true }),
+                items: itemsWithAlerts
+            }
+        });
     } catch (error) {
         console.error('Error getting customer order details:', error);
         return res.status(500).json({ message: 'Internal server error' });
@@ -255,7 +276,7 @@ export const getSupplierOrderById = async (req, res) => {
             return res.status(404).json({ message: 'Order not found' });
         }
 
-        // Now we can log this view since we have a valid orderId
+        // Log the activity
         await createActivityLog(
             req.user.userId,
             'supplier',
@@ -274,7 +295,7 @@ export const getSupplierOrderById = async (req, res) => {
     }
 };
 
-// Start preparing a customer order
+// Start preparing a customer order with FIFO validation
 export const updateCustomerOrderStatus = async (req, res) => {
     const transaction = await sequelize.transaction();
 
@@ -342,20 +363,34 @@ export const updateCustomerOrderStatus = async (req, res) => {
             });
         }
 
-        // If status is 'Prepared', check if all items are available
+        // Enhanced validation for 'Prepared' status with FIFO checking
+        let batchAlerts = [];
+        let insufficientItems = [];
+
         if (status === 'Prepared') {
-            const insufficientItems = [];
-
             for (const item of order.items) {
-                const product = item.product;
+                const fifoInfo = await getFIFOAllocation(item.productId, item.quantity);
 
-                if (product.quantity < item.quantity) {
+                if (!fifoInfo.canFulfill) {
                     insufficientItems.push({
-                        productId: product.productId,
-                        name: product.name,
+                        productId: item.product.productId,
+                        name: item.product.name,
                         requested: item.quantity,
-                        available: product.quantity
+                        available: fifoInfo.totalAvailable || 0
                     });
+                } else {
+                    // Collect FIFO alerts for this item
+                    if (fifoInfo.alerts && fifoInfo.alerts.length > 0) {
+                        batchAlerts.push({
+                            productId: item.product.productId,
+                            productName: item.product.name,
+                            alerts: fifoInfo.alerts,
+                            allocation: fifoInfo.allocation
+                        });
+                    }
+
+                    // Update batch quantities
+                    await updateBatchQuantities(fifoInfo.allocation, transaction);
                 }
             }
 
@@ -366,9 +401,6 @@ export const updateCustomerOrderStatus = async (req, res) => {
                     insufficientItems
                 });
             }
-
-            // Note: As per your request, we're not subtracting quantities yet
-            // This will be implemented later
         }
 
         // Update order status
@@ -425,10 +457,18 @@ export const updateCustomerOrderStatus = async (req, res) => {
             ]
         });
 
-        return res.status(200).json({
+        // Prepare response with batch alerts if any
+        const response = {
             message: `Order status updated to ${status} successfully`,
             order: updatedOrder
-        });
+        };
+
+        if (batchAlerts.length > 0) {
+            response.batchAlerts = batchAlerts;
+            response.alertSummary = `⚠️ BATCH ALERTS: ${batchAlerts.length} product(s) have batch-related notifications.`;
+        }
+
+        return res.status(200).json(response);
     } catch (error) {
         await transaction.rollback();
         console.error('Error updating customer order status:', error);
@@ -436,7 +476,7 @@ export const updateCustomerOrderStatus = async (req, res) => {
     }
 };
 
-// Receive a supplier order
+// Receive a supplier order with batch management
 export const receiveSupplierOrder = async (req, res) => {
     const transaction = await sequelize.transaction();
 
@@ -505,7 +545,10 @@ export const receiveSupplierOrder = async (req, res) => {
             orderItemMap[item.productId] = item;
         }
 
-        // Process received quantities if provided
+        // Collect batch alerts for all items being received
+        const batchAlerts = [];
+
+        // Process received quantities and create batches
         if (items && items.length > 0) {
             for (const item of items) {
                 const orderItem = orderItemMap[item.id];
@@ -529,9 +572,9 @@ export const receiveSupplierOrder = async (req, res) => {
             }
         }
 
-        // Update product quantities
+        // Process each accepted item and create batches
         for (const item of order.items) {
-            // Only update inventory for accepted items
+            // Only process accepted items
             if (item.status === 'Accepted') {
                 const product = item.product;
 
@@ -541,14 +584,49 @@ export const receiveSupplierOrder = async (req, res) => {
                         item.receivedQuantity !== null) ?
                         item.receivedQuantity : item.quantity;
 
-                    // Update product quantity
+                    // Check for existing batches with different dates
+                    const batchCheck = await checkExistingBatches(
+                        item.productId,
+                        item.prodDate,
+                        item.expDate
+                    );
+
+                    if (batchCheck.hasAlert) {
+                        batchAlerts.push({
+                            productId: item.productId,
+                            productName: product.name,
+                            alertType: batchCheck.alertType,
+                            alertMessage: batchCheck.alertMessage,
+                            existingBatches: batchCheck.existingBatches,
+                            newBatch: {
+                                quantity: quantityToAdd,
+                                prodDate: item.prodDate,
+                                expDate: item.expDate
+                            }
+                        });
+                    }
+
+                    // Create new batch for this received item
+                    await createProductBatch({
+                        productId: item.productId,
+                        quantity: quantityToAdd,
+                        prodDate: item.prodDate,
+                        expDate: item.expDate,
+                        supplierId: order.supplierId,
+                        supplierOrderId: order.id,
+                        costPrice: item.costPrice,
+                        notes: `Received from supplier order #${order.id}`
+                    }, transaction);
+
+                    // Update product total quantity
                     const newQuantity = parseFloat(product.quantity) + parseFloat(quantityToAdd);
 
                     await product.update({
                         quantity: newQuantity
                     }, { transaction });
 
-                    // Update production and expiration dates if they were set on the order item
+                    // Update production and expiration dates on product if they were set on the order item
+                    // (Note: This might not be ideal if you have multiple batches with different dates)
                     if (item.prodDate || item.expDate) {
                         const updateData = {};
                         if (item.prodDate) updateData.prodDate = item.prodDate;
@@ -607,16 +685,52 @@ export const receiveSupplierOrder = async (req, res) => {
             ]
         });
 
-        return res.status(200).json({
+        // Prepare response with batch alerts if any
+        const response = {
             message: `Order marked as ${status} successfully`,
             order: updatedOrder
-        });
+        };
+
+        if (batchAlerts.length > 0) {
+            response.batchAlerts = batchAlerts;
+            response.alertSummary = `⚠️ BATCH ALERTS: ${batchAlerts.length} product(s) have existing stock with different production/expiry dates.`;
+        }
+
+        return res.status(200).json(response);
     } catch (error) {
         await transaction.rollback();
         console.error('Error receiving supplier order:', error);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
+
+// Get expiring products dashboard
+export const getExpiringProducts = async (req, res) => {
+    try {
+        // Check if user is a warehouse employee
+        const warehouseEmployee = await warehouseEmployeeModel.findOne({
+            where: { userId: req.user.userId }
+        });
+
+        if (!warehouseEmployee) {
+            return res.status(403).json({ message: 'Access denied. User is not a warehouse employee' });
+        }
+
+        const daysAhead = req.query.days ? parseInt(req.query.days) : 30;
+        const expiringBatches = await getExpiringBatches(daysAhead);
+
+        return res.status(200).json({
+            message: `Products expiring within ${daysAhead} days`,
+            count: expiringBatches.length,
+            expiringProducts: expiringBatches
+        });
+    } catch (error) {
+        console.error('Error getting expiring products:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// [Previous controller functions remain the same...]
 
 // Get orders history for the warehouse employee
 export const getOrdersHistory = async (req, res) => {
@@ -744,14 +858,8 @@ export const getOrderActivityLogs = async (req, res) => {
             return res.status(400).json({ message: idValidation.error.details[0].message });
         }
 
-        // Check if user is an admin
-        // if (req.user.role !== 'Admin') {
-        //     return res.status(403).json({ message: 'Access denied. Only admins can view detailed order logs' });
-        // }
-
         const orderId = req.params.id;
         const orderType = req.query.type; // 'customer' or 'supplier'
-        console.log(orderType);
 
         if (!orderType || (orderType !== 'customer' && orderType !== 'supplier')) {
             return res.status(400).json({ message: 'Order type must be specified as "customer" or "supplier"' });
