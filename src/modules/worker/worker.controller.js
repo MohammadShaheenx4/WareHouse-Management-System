@@ -228,7 +228,8 @@ export const getCustomerOrderById = async (req, res) => {
     }
 };
 
-// Get supplier order by ID with logging
+// Enhanced getSupplierOrderById function with batch conflict alerts for workers
+
 export const getSupplierOrderById = async (req, res) => {
     try {
         // Validate ID parameter
@@ -248,7 +249,7 @@ export const getSupplierOrderById = async (req, res) => {
 
         const orderId = req.params.id;
 
-        // Get the specific order
+        // Get the specific order with all items and their supplier-provided dates
         const order = await supplierOrderModel.findByPk(orderId, {
             include: [
                 {
@@ -276,19 +277,115 @@ export const getSupplierOrderById = async (req, res) => {
             return res.status(404).json({ message: 'Order not found' });
         }
 
+        // Check for batch conflicts for each accepted item with dates
+        const batchAlerts = [];
+        const itemsWithAlerts = [];
+
+        for (const item of order.items) {
+            const itemData = item.get({ plain: true });
+
+            // Only check for conflicts if item is accepted and has dates
+            if (item.status === 'Accepted' && (item.prodDate || item.expDate)) {
+                try {
+                    // Check for existing batches with different dates
+                    const batchCheck = await checkExistingBatches(
+                        item.productId,
+                        item.prodDate,
+                        item.expDate
+                    );
+
+                    if (batchCheck.hasAlert) {
+                        const alertInfo = {
+                            productId: item.productId,
+                            productName: item.product.name,
+                            alertType: batchCheck.alertType,
+                            alertMessage: batchCheck.alertMessage,
+                            existingBatches: batchCheck.existingBatches,
+                            supplierDates: {
+                                prodDate: item.prodDate,
+                                expDate: item.expDate,
+                                batchNumber: item.batchNumber,
+                                notes: item.notes
+                            }
+                        };
+
+                        batchAlerts.push(alertInfo);
+                        itemData.batchAlert = alertInfo;
+                    } else {
+                        itemData.batchAlert = {
+                            hasAlert: false,
+                            message: "✅ No date conflicts - this product batch is compatible with existing stock"
+                        };
+                    }
+                } catch (error) {
+                    console.error(`Error checking batch conflicts for product ${item.productId}:`, error);
+                    itemData.batchAlert = {
+                        hasAlert: false,
+                        message: "Unable to check batch conflicts"
+                    };
+                }
+            } else if (item.status === 'Accepted' && !item.prodDate && !item.expDate) {
+                // Item is accepted but has no dates
+                itemData.batchAlert = {
+                    hasAlert: false,
+                    message: "ℹ️ No production/expiry dates provided for this item"
+                };
+            } else if (item.status === 'Declined') {
+                // Item is declined
+                itemData.batchAlert = {
+                    hasAlert: false,
+                    message: "❌ Item declined by supplier"
+                };
+            } else {
+                // Item is pending or other status
+                itemData.batchAlert = {
+                    hasAlert: false,
+                    message: `📋 Item status: ${item.status || 'Pending'}`
+                };
+            }
+
+            itemsWithAlerts.push(itemData);
+        }
+
         // Log the activity
         await createActivityLog(
             req.user.userId,
             'supplier',
             orderId,
-            'Viewed supplier order details',
+            'Viewed supplier order details with batch conflict analysis',
             order.status,
             order.status,
             null,
             null
         );
 
-        return res.status(200).json({ order });
+        // Prepare the response with batch alerts
+        const response = {
+            message: 'Supplier order retrieved successfully',
+            order: {
+                ...order.get({ plain: true }),
+                items: itemsWithAlerts
+            }
+        };
+
+        // Add batch alerts summary if any conflicts exist
+        if (batchAlerts.length > 0) {
+            response.batchAlerts = batchAlerts;
+            response.alertSummary = {
+                hasAlerts: true,
+                alertCount: batchAlerts.length,
+                message: `⚠️ BATCH ALERTS: ${batchAlerts.length} product(s) have existing stock with different production/expiry dates.`,
+                recommendation: "Please review the conflicting dates before receiving this order. Use FIFO (First In, First Out) method when storing products."
+            };
+        } else {
+            response.alertSummary = {
+                hasAlerts: false,
+                message: "✅ No batch conflicts detected. All products are compatible with existing stock.",
+                recommendation: "Order is ready to be received without batch concerns."
+            };
+        }
+
+        return res.status(200).json(response);
     } catch (error) {
         console.error('Error getting supplier order details:', error);
         return res.status(500).json({ message: 'Internal server error' });
