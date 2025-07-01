@@ -63,7 +63,7 @@ export const register = async (req, res, next) => {
         }
 
         // If the role is warehouseEmployee, insert into the warehouseemployee table
-        if (roleName === 'warehouseEmployee') {
+        if (roleName === 'WareHouseEmployee') {
             await warehouseEmployeeModel.create({
                 userId: newUser.userId   // Link warehouse employee to the new user via userId
             });
