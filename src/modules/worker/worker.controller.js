@@ -477,6 +477,10 @@ export const updateCustomerOrderStatus = async (req, res) => {
 };
 
 // Receive a supplier order with batch management
+// Updated receiveSupplierOrder function with correct field names matching your model
+
+// Updated receiveSupplierOrder function with correct field names matching your model
+
 export const receiveSupplierOrder = async (req, res) => {
     const transaction = await sequelize.transaction();
 
@@ -496,7 +500,7 @@ export const receiveSupplierOrder = async (req, res) => {
         }
 
         const orderId = req.params.id;
-        const { status, note, items, prodDate, expDate } = req.body; // Extract top-level dates
+        const { status, note, items } = req.body;
 
         // Check if user is a warehouse employee
         const warehouseEmployee = await warehouseEmployeeModel.findOne({
@@ -508,7 +512,7 @@ export const receiveSupplierOrder = async (req, res) => {
             return res.status(403).json({ message: 'Access denied. User is not a warehouse employee' });
         }
 
-        // Get the order
+        // Get the order with all items and their supplier-provided dates
         const order = await supplierOrderModel.findByPk(orderId, {
             include: [
                 {
@@ -548,7 +552,7 @@ export const receiveSupplierOrder = async (req, res) => {
         // Collect batch alerts for all items being received
         const batchAlerts = [];
 
-        // Process received quantities and update order items if provided
+        // Process received quantities if provided (worker can adjust quantities)
         if (items && items.length > 0) {
             for (const item of items) {
                 const orderItem = orderItemMap[item.id];
@@ -565,18 +569,14 @@ export const receiveSupplierOrder = async (req, res) => {
                     updateData.subtotal = orderItem.costPrice * item.receivedQuantity;
                 }
 
-                // Update production date - priority: item-level > top-level > existing
-                if (item.prodDate !== undefined) {
-                    updateData.prodDate = item.prodDate;
-                } else if (prodDate !== undefined) {
-                    updateData.prodDate = prodDate;
+                // Update batch number if provided by worker
+                if (item.batchNumber !== undefined) {
+                    updateData.batchNumber = item.batchNumber;
                 }
 
-                // Update expiry date - priority: item-level > top-level > existing
-                if (item.expDate !== undefined) {
-                    updateData.expDate = item.expDate;
-                } else if (expDate !== undefined) {
-                    updateData.expDate = expDate;
+                // Update notes if provided by worker
+                if (item.notes !== undefined) {
+                    updateData.notes = item.notes;
                 }
 
                 // Update the order item if there are changes
@@ -584,22 +584,9 @@ export const receiveSupplierOrder = async (req, res) => {
                     await orderItem.update(updateData, { transaction });
                 }
             }
-        } else {
-            // If no items array provided, apply top-level dates to all order items
-            if (prodDate !== undefined || expDate !== undefined) {
-                for (const item of order.items) {
-                    const updateData = {};
-                    if (prodDate !== undefined) updateData.prodDate = prodDate;
-                    if (expDate !== undefined) updateData.expDate = expDate;
-
-                    if (Object.keys(updateData).length > 0) {
-                        await item.update(updateData, { transaction });
-                    }
-                }
-            }
         }
 
-        // Process each accepted item and create batches
+        // Process each accepted item and create batches using supplier-provided dates
         for (const item of order.items) {
             // Only process accepted items
             if (item.status === 'Accepted') {
@@ -611,42 +598,46 @@ export const receiveSupplierOrder = async (req, res) => {
                         item.receivedQuantity !== null) ?
                         item.receivedQuantity : item.quantity;
 
-                    // Get the dates to use (updated item dates or fallback to top-level dates)
-                    const itemProdDate = item.prodDate || prodDate || null;
-                    const itemExpDate = item.expDate || expDate || null;
+                    // Use the dates that supplier provided (may be null for some items)
+                    const supplierProdDate = item.prodDate || null;
+                    const supplierExpDate = item.expDate || null;
 
-                    // Check for existing batches with different dates
-                    const batchCheck = await checkExistingBatches(
-                        item.productId,
-                        itemProdDate,
-                        itemExpDate
-                    );
+                    // Check for existing batches with different dates (only if supplier provided dates)
+                    if (supplierProdDate || supplierExpDate) {
+                        const batchCheck = await checkExistingBatches(
+                            item.productId,
+                            supplierProdDate,
+                            supplierExpDate
+                        );
 
-                    if (batchCheck.hasAlert) {
-                        batchAlerts.push({
-                            productId: item.productId,
-                            productName: product.name,
-                            alertType: batchCheck.alertType,
-                            alertMessage: batchCheck.alertMessage,
-                            existingBatches: batchCheck.existingBatches,
-                            newBatch: {
-                                quantity: quantityToAdd,
-                                prodDate: itemProdDate,
-                                expDate: itemExpDate
-                            }
-                        });
+                        if (batchCheck.hasAlert) {
+                            batchAlerts.push({
+                                productId: item.productId,
+                                productName: product.name,
+                                alertType: batchCheck.alertType,
+                                alertMessage: batchCheck.alertMessage,
+                                existingBatches: batchCheck.existingBatches,
+                                newBatch: {
+                                    quantity: quantityToAdd,
+                                    prodDate: supplierProdDate,
+                                    expDate: supplierExpDate,
+                                    batchNumber: item.batchNumber || null
+                                }
+                            });
+                        }
                     }
 
-                    // Create new batch for this received item
+                    // Create new batch for this received item with supplier-provided information
                     await createProductBatch({
                         productId: item.productId,
                         quantity: quantityToAdd,
-                        prodDate: itemProdDate,
-                        expDate: itemExpDate,
+                        prodDate: supplierProdDate,
+                        expDate: supplierExpDate,
                         supplierId: order.supplierId,
-                        supplierOrderId: order.id,
+                        supplierOrderId: order.id, // Note: using order.id for the batch
                         costPrice: item.costPrice,
-                        notes: `Received from supplier order #${order.id}`
+                        batchNumber: item.batchNumber || null,
+                        notes: item.notes || `Received from supplier order #${order.id}`
                     }, transaction);
 
                     // Update product total quantity
@@ -656,14 +647,22 @@ export const receiveSupplierOrder = async (req, res) => {
                         quantity: newQuantity
                     }, { transaction });
 
-                    // Update production and expiration dates on product if they were set
-                    // (Note: This might not be ideal if you have multiple batches with different dates)
-                    if (itemProdDate || itemExpDate) {
+                    // Update production and expiration dates on product if supplier provided them
+                    // (Note: Only update if product doesn't have dates or if this is newer)
+                    if (supplierProdDate || supplierExpDate) {
                         const updateData = {};
-                        if (itemProdDate) updateData.prodDate = itemProdDate;
-                        if (itemExpDate) updateData.expDate = itemExpDate;
 
-                        await product.update(updateData, { transaction });
+                        // Update product dates only if product doesn't have them or if they're newer
+                        if (supplierProdDate && (!product.prodDate || new Date(supplierProdDate) > new Date(product.prodDate))) {
+                            updateData.prodDate = supplierProdDate;
+                        }
+                        if (supplierExpDate && (!product.expDate || new Date(supplierExpDate) > new Date(product.expDate))) {
+                            updateData.expDate = supplierExpDate;
+                        }
+
+                        if (Object.keys(updateData).length > 0) {
+                            await product.update(updateData, { transaction });
+                        }
                     }
                 }
             }
@@ -724,7 +723,7 @@ export const receiveSupplierOrder = async (req, res) => {
 
         if (batchAlerts.length > 0) {
             response.batchAlerts = batchAlerts;
-            response.alertSummary = `⚠️ BATCH ALERTS: ${batchAlerts.length} product(s) have existing stock with different production/expiry dates.`;
+            response.alertSummary = `⚠️ BATCH ALERTS: ${batchAlerts.length} product(s) have existing stock with different production/expiry dates provided by supplier.`;
         }
 
         return res.status(200).json(response);

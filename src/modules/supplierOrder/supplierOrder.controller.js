@@ -178,7 +178,7 @@ export const getProductSuppliers = async (req, res) => {
 };
 
 /**
- * @desc    Create a new order from supplier
+ * @desc    Create a new order from supplier (enhanced with optional dates)
  * @route   POST /api/supplierOrders
  * @access  Admin
  */
@@ -311,15 +311,22 @@ export const createSupplierOrder = async (req, res) => {
             const quantity = parseInt(item.quantity);
             const subtotal = costPrice * quantity;
 
-            orderItems.push({
+            // Create order item with optional dates and batch information
+            const orderItem = {
                 productId: item.productId,
                 quantity: quantity,
                 costPrice: costPrice,
                 originalCostPrice: costPrice, // Store as original for reference
                 subtotal: subtotal,
-                status: null // Initially null, will be set when supplier responds
-            });
+                status: null, // Initially null, will be set when supplier responds
+                // Optional date fields from supplier during order creation
+                prodDate: item.prodDate || null,
+                expDate: item.expDate || null,
+                batchNumber: item.batchNumber || null,
+                notes: item.notes || null
+            };
 
+            orderItems.push(orderItem);
             totalCost += subtotal;
         }
 
@@ -331,7 +338,7 @@ export const createSupplierOrder = async (req, res) => {
             note: note || null
         }, { transaction });
 
-        // Create order items
+        // Create order items with optional dates
         for (const item of orderItems) {
             item.orderId = newOrder.id;
         }

@@ -7,35 +7,14 @@ export const prepareCustomerOrderSchema = Joi.object({
     note: Joi.string().allow('', null)
 });
 
-// Enhanced validate receive supplier order request with batch information
+// Worker validation for receiving supplier order - no dates, supplier already provided them
 export const receiveSupplierOrderSchema = Joi.object({
     status: Joi.string().valid('Delivered').required(),
     note: Joi.string().allow('', null),
-    // Add prodDate and expDate at the top level for all items
-    prodDate: Joi.date().iso().allow(null).optional()
-        .messages({
-            'date.base': 'Production date must be a valid date',
-            'date.format': 'Production date must be in ISO format (YYYY-MM-DD)'
-        }),
-    expDate: Joi.date().iso().allow(null).optional()
-        .messages({
-            'date.base': 'Expiry date must be a valid date',
-            'date.format': 'Expiry date must be in ISO format (YYYY-MM-DD)'
-        }),
     items: Joi.array().items(
         Joi.object({
             id: Joi.number().integer().positive().required(),
             receivedQuantity: Joi.number().integer().min(0).optional(),
-            prodDate: Joi.date().iso().allow(null).optional()
-                .messages({
-                    'date.base': 'Production date must be a valid date',
-                    'date.format': 'Production date must be in ISO format (YYYY-MM-DD)'
-                }),
-            expDate: Joi.date().iso().allow(null).optional()
-                .messages({
-                    'date.base': 'Expiry date must be a valid date',
-                    'date.format': 'Expiry date must be in ISO format (YYYY-MM-DD)'
-                }),
             batchNumber: Joi.string().max(100).allow('', null).optional()
                 .messages({
                     'string.max': 'Batch number cannot exceed 100 characters'
@@ -46,87 +25,6 @@ export const receiveSupplierOrderSchema = Joi.object({
                 })
         })
     ).optional()
-}).custom((value, helpers) => {
-    // Custom validation: if items are provided, validate date logic
-    if (value.items && value.items.length > 0) {
-        for (const item of value.items) {
-            // If both dates are provided, expiry should be after production
-            if (item.prodDate && item.expDate) {
-                const prodDate = new Date(item.prodDate);
-                const expDate = new Date(item.expDate);
-
-                if (expDate <= prodDate) {
-                    return helpers.error('any.custom', {
-                        message: `Expiry date must be after production date for item ${item.id}`
-                    });
-                }
-            }
-
-            // Production date should not be in the future
-            if (item.prodDate) {
-                const prodDate = new Date(item.prodDate);
-                const today = new Date();
-                today.setHours(23, 59, 59, 999); // End of today
-
-                if (prodDate > today) {
-                    return helpers.error('any.custom', {
-                        message: `Production date cannot be in the future for item ${item.id}`
-                    });
-                }
-            }
-
-            // Expiry date should not be in the past
-            if (item.expDate) {
-                const expDate = new Date(item.expDate);
-                const today = new Date();
-                today.setHours(0, 0, 0, 0); // Start of today
-
-                if (expDate < today) {
-                    return helpers.error('any.custom', {
-                        message: `Expiry date cannot be in the past for item ${item.id}`
-                    });
-                }
-            }
-        }
-    }
-
-    // Validate top-level dates too
-    if (value.prodDate && value.expDate) {
-        const prodDate = new Date(value.prodDate);
-        const expDate = new Date(value.expDate);
-
-        if (expDate <= prodDate) {
-            return helpers.error('any.custom', {
-                message: 'Expiry date must be after production date'
-            });
-        }
-    }
-
-    if (value.prodDate) {
-        const prodDate = new Date(value.prodDate);
-        const today = new Date();
-        today.setHours(23, 59, 59, 999);
-
-        if (prodDate > today) {
-            return helpers.error('any.custom', {
-                message: 'Production date cannot be in the future'
-            });
-        }
-    }
-
-    if (value.expDate) {
-        const expDate = new Date(value.expDate);
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        if (expDate < today) {
-            return helpers.error('any.custom', {
-                message: 'Expiry date cannot be in the past'
-            });
-        }
-    }
-
-    return value;
 });
 
 // Validate order ID parameter

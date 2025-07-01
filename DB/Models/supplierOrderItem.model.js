@@ -41,18 +41,33 @@ const supplierOrderItemModel = sequelize.define('SupplierorderItem', {
         defaultValue: null,
         allowNull: true
     },
-    // Add to your supplierOrderItemModel.js file
+    // Received quantity set by warehouse worker
     receivedQuantity: {
         type: DataTypes.INTEGER,
-        allowNull: true
+        allowNull: true,
+        comment: 'Actual quantity received (set by warehouse worker)'
     },
+    // Production and expiry dates provided by supplier
     prodDate: {
         type: DataTypes.DATE,
-        allowNull: true
+        allowNull: true,
+        comment: 'Production date provided by supplier (optional)'
     },
     expDate: {
         type: DataTypes.DATE,
-        allowNull: true
+        allowNull: true,
+        comment: 'Expiry date provided by supplier (optional)'
+    },
+    // Batch management fields
+    batchNumber: {
+        type: DataTypes.STRING(100),
+        allowNull: true,
+        comment: 'Batch/Lot number from supplier (optional)'
+    },
+    notes: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+        comment: 'Additional notes about this item from supplier or warehouse'
     },
     originalCostPrice: {
         type: DataTypes.FLOAT,
@@ -65,7 +80,24 @@ const supplierOrderItemModel = sequelize.define('SupplierorderItem', {
     }
 }, {
     tableName: 'supplierorderItems',
-    timestamps: true
+    timestamps: true,
+    indexes: [
+        {
+            fields: ['orderId'] // For efficient order lookups
+        },
+        {
+            fields: ['productId'] // For efficient product lookups
+        },
+        {
+            fields: ['status'] // For filtering by status
+        },
+        {
+            fields: ['expDate'] // For tracking expiry dates
+        },
+        {
+            fields: ['prodDate'] // For FIFO processing
+        }
+    ]
 });
 
 // Define associations
