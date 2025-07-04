@@ -15,7 +15,7 @@ import { Op } from "sequelize";
 import {
     prepareCustomerOrderSchema,
     receiveSupplierOrderSchema,
-    validateOrderId
+    validateOrderId, preparerWithBatchesSchema
 } from "./worker.validation.js";
 import {
     checkExistingBatches,
@@ -404,15 +404,24 @@ export const updateCustomerOrderStatus = async (req, res) => {
             return res.status(400).json({ message: idValidation.error.details[0].message });
         }
 
-        // Validate request body
-        const { error } = prepareCustomerOrderSchema.validate(req.body);
+        // Validate request body based on status
+        const { status } = req.body;
+        let validationSchema;
+
+        if (status === 'Prepared' && req.body.batchSelections) {
+            validationSchema = preparerWithBatchesSchema;
+        } else {
+            validationSchema = prepareCustomerOrderSchema;
+        }
+
+        const { error } = validationSchema.validate(req.body);
         if (error) {
             await transaction.rollback();
             return res.status(400).json({ message: error.details[0].message });
         }
 
         const orderId = req.params.id;
-        const { status, note } = req.body;
+        const { note, batchSelections } = req.body;
 
         // Check if user is a warehouse employee
         const warehouseEmployee = await warehouseEmployeeModel.findOne({
@@ -460,43 +469,322 @@ export const updateCustomerOrderStatus = async (req, res) => {
             });
         }
 
-        // Enhanced validation for 'Prepared' status with FIFO checking
-        let batchAlerts = [];
-        let insufficientItems = [];
+        // ENHANCED: Handle "Preparing" status with batch analysis
+        if (status === 'Preparing') {
+            let batchAlerts = [];
+            let insufficientItems = [];
+            let productAnalysis = [];
 
-        if (status === 'Prepared') {
             for (const item of order.items) {
-                const fifoInfo = await getFIFOAllocation(item.productId, item.quantity);
+                // Check if product has batches
+                const productBatches = await productBatchModel.findAll({
+                    where: {
+                        productId: item.productId,
+                        quantity: { [Op.gt]: 0 },
+                        status: 'Active'
+                    },
+                    order: [
+                        ['prodDate', 'ASC'],
+                        ['receivedDate', 'ASC'],
+                        ['id', 'ASC']
+                    ]
+                });
 
-                if (!fifoInfo.canFulfill) {
-                    insufficientItems.push({
-                        productId: item.product.productId,
-                        name: item.product.name,
-                        requested: item.quantity,
-                        available: fifoInfo.totalAvailable || 0
-                    });
-                } else {
-                    // Collect FIFO alerts for this item
-                    if (fifoInfo.alerts && fifoInfo.alerts.length > 0) {
-                        batchAlerts.push({
+                const hasBatches = productBatches.length > 0;
+                const totalBatchQuantity = productBatches.reduce((sum, batch) => sum + batch.quantity, 0);
+                const productTotalQuantity = item.product.quantity;
+
+                if (hasBatches) {
+                    // Product has batches - use batch-based logic
+                    const fifoInfo = await getFIFOAllocation(item.productId, item.quantity);
+
+                    if (!fifoInfo.canFulfill) {
+                        insufficientItems.push({
                             productId: item.product.productId,
+                            name: item.product.name,
+                            requested: item.quantity,
+                            available: totalBatchQuantity,
+                            type: 'batch-managed'
+                        });
+                    } else {
+                        const hasMultipleBatches = productBatches.length > 1;
+                        const hasDateConflicts = productBatches.some((batch, index) => {
+                            if (index === 0) return false;
+                            const prevBatch = productBatches[index - 1];
+                            return batch.prodDate !== prevBatch.prodDate || batch.expDate !== prevBatch.expDate;
+                        });
+
+                        productAnalysis.push({
+                            productId: item.productId,
                             productName: item.product.name,
-                            alerts: fifoInfo.alerts,
-                            allocation: fifoInfo.allocation
+                            requestedQuantity: item.quantity,
+                            hasBatches: true,
+                            hasMultipleBatches,
+                            hasDateConflicts,
+                            requiresBatchSelection: hasMultipleBatches || hasDateConflicts,
+                            availableBatches: productBatches.map(batch => ({
+                                batchId: batch.id,
+                                quantity: batch.quantity,
+                                prodDate: batch.prodDate,
+                                expDate: batch.expDate,
+                                batchNumber: batch.batchNumber,
+                                receivedDate: batch.receivedDate,
+                                costPrice: batch.costPrice,
+                                notes: batch.notes,
+                                daysUntilExpiry: batch.expDate ?
+                                    Math.ceil((new Date(batch.expDate) - new Date()) / (1000 * 60 * 60 * 24)) : null
+                            })),
+                            fifoRecommendation: fifoInfo.allocation
+                        });
+
+                        if (hasMultipleBatches || hasDateConflicts) {
+                            batchAlerts.push({
+                                productId: item.productId,
+                                productName: item.product.name,
+                                alertType: hasDateConflicts ? 'DATE_CONFLICTS' : 'MULTIPLE_BATCHES',
+                                message: hasDateConflicts ?
+                                    '⚠️ This product has batches with different production/expiry dates' :
+                                    'ℹ️ This product has multiple batches available',
+                                requiresSelection: true
+                            });
+                        }
+                    }
+                } else {
+                    // Product has no batches - use simple quantity check
+                    if (productTotalQuantity < item.quantity) {
+                        insufficientItems.push({
+                            productId: item.product.productId,
+                            name: item.product.name,
+                            requested: item.quantity,
+                            available: productTotalQuantity,
+                            type: 'simple-quantity'
+                        });
+                    } else {
+                        productAnalysis.push({
+                            productId: item.productId,
+                            productName: item.product.name,
+                            requestedQuantity: item.quantity,
+                            hasBatches: false,
+                            requiresBatchSelection: false,
+                            availableQuantity: productTotalQuantity,
+                            message: '✅ Simple quantity check - no batch management needed'
                         });
                     }
-
-                    // Update batch quantities
-                    await updateBatchQuantities(fifoInfo.allocation, transaction);
                 }
             }
 
             if (insufficientItems.length > 0) {
                 await transaction.rollback();
                 return res.status(400).json({
-                    message: 'Cannot mark order as Prepared due to insufficient product quantities',
+                    message: 'Cannot start preparing order due to insufficient quantities',
                     insufficientItems
                 });
+            }
+
+            // Update order status to Preparing
+            const updateData = {
+                status: 'Preparing',
+                note: note || order.note,
+                preparedBy: warehouseEmployee.id,
+                preparedAt: new Date()
+            };
+
+            await order.update(updateData, { transaction });
+
+            // Log the activity
+            await createActivityLog(
+                req.user.userId,
+                'customer',
+                orderId,
+                `Started preparing order - ${batchAlerts.length > 0 ? 'batch selection required' : 'ready for completion'}`,
+                previousStatus,
+                status,
+                note,
+                transaction
+            );
+
+            await transaction.commit();
+
+            // Get updated order
+            const updatedOrder = await customerOrderModel.findByPk(orderId, {
+                include: [
+                    {
+                        model: customerModel,
+                        as: 'customer',
+                        attributes: ['id', 'address'],
+                        include: [{
+                            model: userModel,
+                            as: 'user',
+                            attributes: ['userId', 'name', 'phoneNumber']
+                        }]
+                    },
+                    {
+                        model: customerOrderItemModel,
+                        as: 'items',
+                        include: [{
+                            model: productModel,
+                            as: 'product',
+                            attributes: ['productId', 'name', 'image', 'quantity']
+                        }]
+                    }
+                ]
+            });
+
+            // Return detailed batch information
+            return res.status(200).json({
+                message: 'Order status updated to Preparing successfully',
+                order: updatedOrder,
+                batchInfo: {
+                    requiresBatchSelection: batchAlerts.length > 0,
+                    batchAlerts,
+                    productAnalysis,
+                    instructions: {
+                        withBatches: "Products with batches require specific batch selection with quantities",
+                        withoutBatches: "Products without batches will use simple quantity deduction",
+                        fifo: "Recommended: Use FIFO (First In, First Out) - oldest dates first"
+                    }
+                },
+                nextStep: batchAlerts.length > 0 ?
+                    "Select specific batches and quantities for products with multiple batches" :
+                    "All products ready - can proceed to mark as Prepared"
+            });
+        }
+
+        // ENHANCED: Handle "Prepared" status with batch selections
+        if (status === 'Prepared') {
+            let processedProducts = [];
+            let errors = [];
+
+            for (const item of order.items) {
+                // Check if product has batches
+                const productBatches = await productBatchModel.findAll({
+                    where: {
+                        productId: item.productId,
+                        quantity: { [Op.gt]: 0 },
+                        status: 'Active'
+                    }
+                });
+
+                const hasBatches = productBatches.length > 0;
+
+                if (hasBatches) {
+                    // Product has batches - require batch selections
+                    const productSelections = batchSelections ?
+                        batchSelections.filter(sel => sel.productId === item.productId) : [];
+
+                    if (productSelections.length === 0) {
+                        // No batch selection provided - use FIFO allocation
+                        const fifoInfo = await getFIFOAllocation(item.productId, item.quantity);
+
+                        if (!fifoInfo.canFulfill) {
+                            errors.push(`Insufficient batch quantity for ${item.product.name}`);
+                            continue;
+                        }
+
+                        // Use FIFO allocation
+                        await updateBatchQuantities(fifoInfo.allocation, transaction);
+                        processedProducts.push({
+                            productId: item.productId,
+                            productName: item.product.name,
+                            method: 'auto-fifo',
+                            allocations: fifoInfo.allocation
+                        });
+                    } else {
+                        // Validate custom batch selections
+                        const totalSelected = productSelections.reduce((sum, sel) => sum + sel.quantity, 0);
+
+                        if (totalSelected !== item.quantity) {
+                            errors.push(`Selected quantity (${totalSelected}) doesn't match required quantity (${item.quantity}) for ${item.product.name}`);
+                            continue;
+                        }
+
+                        // Process each batch selection
+                        let customAllocations = [];
+                        for (const selection of productSelections) {
+                            const batch = await productBatchModel.findByPk(selection.batchId);
+
+                            if (!batch || batch.productId !== item.productId) {
+                                errors.push(`Invalid batch selection for ${item.product.name}`);
+                                break;
+                            }
+
+                            if (batch.quantity < selection.quantity) {
+                                errors.push(`Insufficient quantity in batch ${batch.batchNumber || batch.id} for ${item.product.name}`);
+                                break;
+                            }
+
+                            // Update batch quantity
+                            const newQuantity = batch.quantity - selection.quantity;
+                            await batch.update({
+                                quantity: newQuantity,
+                                status: newQuantity <= 0 ? 'Depleted' : 'Active'
+                            }, { transaction });
+
+                            customAllocations.push({
+                                batchId: batch.id,
+                                quantity: selection.quantity,
+                                batchNumber: batch.batchNumber,
+                                prodDate: batch.prodDate,
+                                expDate: batch.expDate
+                            });
+                        }
+
+                        if (errors.length === 0) {
+                            processedProducts.push({
+                                productId: item.productId,
+                                productName: item.product.name,
+                                method: 'custom-selection',
+                                allocations: customAllocations
+                            });
+                        }
+                    }
+                } else {
+                    // Product has no batches - simple quantity check and deduction
+                    if (item.product.quantity < item.quantity) {
+                        errors.push(`Insufficient quantity for ${item.product.name}. Available: ${item.product.quantity}, Required: ${item.quantity}`);
+                        continue;
+                    }
+
+                    // Deduct from product quantity directly
+                    const newProductQuantity = item.product.quantity - item.quantity;
+                    await item.product.update({
+                        quantity: newProductQuantity
+                    }, { transaction });
+
+                    processedProducts.push({
+                        productId: item.productId,
+                        productName: item.product.name,
+                        method: 'simple-deduction',
+                        deductedQuantity: item.quantity,
+                        remainingQuantity: newProductQuantity
+                    });
+                }
+            }
+
+            if (errors.length > 0) {
+                await transaction.rollback();
+                return res.status(400).json({
+                    message: 'Cannot mark order as Prepared due to validation errors',
+                    errors
+                });
+            }
+
+            // Update product total quantities for batch-managed products
+            for (const product of processedProducts.filter(p => p.method !== 'simple-deduction')) {
+                const totalBatchQuantity = await productBatchModel.sum('quantity', {
+                    where: {
+                        productId: product.productId,
+                        status: 'Active'
+                    }
+                }) || 0;
+
+                await productModel.update(
+                    { quantity: totalBatchQuantity },
+                    {
+                        where: { productId: product.productId },
+                        transaction
+                    }
+                );
             }
         }
 
@@ -505,12 +793,6 @@ export const updateCustomerOrderStatus = async (req, res) => {
             status,
             note: note || order.note
         };
-
-        // If starting preparation, record who started it
-        if (status === 'Preparing') {
-            updateData.preparedBy = warehouseEmployee.id;
-            updateData.preparedAt = new Date();
-        }
 
         await order.update(updateData, { transaction });
 
@@ -526,7 +808,6 @@ export const updateCustomerOrderStatus = async (req, res) => {
             transaction
         );
 
-        // Commit the transaction
         await transaction.commit();
 
         // Get updated order with all details
@@ -554,18 +835,18 @@ export const updateCustomerOrderStatus = async (req, res) => {
             ]
         });
 
-        // Prepare response with batch alerts if any
         const response = {
             message: `Order status updated to ${status} successfully`,
             order: updatedOrder
         };
 
-        if (batchAlerts.length > 0) {
-            response.batchAlerts = batchAlerts;
-            response.alertSummary = `⚠️ BATCH ALERTS: ${batchAlerts.length} product(s) have batch-related notifications.`;
+        if (status === 'Prepared' && processedProducts) {
+            response.processedProducts = processedProducts;
+            response.summary = `Successfully prepared ${processedProducts.length} products using batch management and quantity deduction`;
         }
 
         return res.status(200).json(response);
+
     } catch (error) {
         await transaction.rollback();
         console.error('Error updating customer order status:', error);

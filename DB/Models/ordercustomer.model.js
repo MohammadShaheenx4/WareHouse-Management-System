@@ -2,6 +2,7 @@ import { DataTypes } from 'sequelize';
 import sequelize from '../Connection.js';
 import customerModel from './customer.model.js';
 import deliveryEmployeeModel from './deliveryEmployee.model.js';
+import warehouseEmployeeModel from './WareHouseEmployee.model.js'; // NEW: Add this import
 import userModel from './user.model.js';
 
 const customerOrderModel = sequelize.define('Customerorder', {
@@ -48,6 +49,22 @@ const customerOrderModel = sequelize.define('Customerorder', {
         allowNull: true,
         defaultValue: null
     },
+    // NEW: Warehouse preparation tracking fields
+    preparedBy: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        references: {
+            model: 'warehouseemployee',
+            key: 'id'
+        },
+        comment: 'Warehouse employee who prepared the order'
+    },
+    preparedAt: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        comment: 'Timestamp when order preparation started'
+    },
+    // Delivery tracking fields
     deliveryEmployeeId: {
         type: DataTypes.INTEGER,
         allowNull: true,
@@ -102,6 +119,17 @@ customerOrderModel.belongsTo(customerModel, {
 customerModel.hasMany(customerOrderModel, {
     foreignKey: 'customerId',
     as: 'orders'
+});
+
+// NEW: Warehouse employee association for preparation tracking
+customerOrderModel.belongsTo(warehouseEmployeeModel, {
+    foreignKey: 'preparedBy',
+    as: 'preparer'
+});
+
+warehouseEmployeeModel.hasMany(customerOrderModel, {
+    foreignKey: 'preparedBy',
+    as: 'preparedOrders'
 });
 
 // Delivery employee associations - updated for multi-order support

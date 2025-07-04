@@ -1,13 +1,47 @@
 // File: Modules/warehouseEmployee/worker.validation.js
 import Joi from 'joi';
 
-// Validate prepare customer order request
+// Standard prepare customer order request (for Preparing status)
 export const prepareCustomerOrderSchema = Joi.object({
     status: Joi.string().valid('Preparing', 'Prepared').required(),
-    note: Joi.string().allow('', null)
+    note: Joi.string().allow('', null).optional()
 });
 
-// Worker validation for receiving supplier order - no dates, supplier already provided them
+// Enhanced validation for preparing with batch selections (for Prepared status with custom batches)
+export const preparerWithBatchesSchema = Joi.object({
+    status: Joi.string().valid('Prepared').required(),
+    note: Joi.string().allow('', null).optional(),
+    batchSelections: Joi.array().items(
+        Joi.object({
+            productId: Joi.number().integer().positive().required()
+                .messages({
+                    'number.base': 'Product ID must be a number',
+                    'number.integer': 'Product ID must be an integer',
+                    'number.positive': 'Product ID must be positive',
+                    'any.required': 'Product ID is required'
+                }),
+            batchId: Joi.number().integer().positive().required()
+                .messages({
+                    'number.base': 'Batch ID must be a number',
+                    'number.integer': 'Batch ID must be an integer',
+                    'number.positive': 'Batch ID must be positive',
+                    'any.required': 'Batch ID is required'
+                }),
+            quantity: Joi.number().integer().min(1).required()
+                .messages({
+                    'number.base': 'Quantity must be a number',
+                    'number.integer': 'Quantity must be an integer',
+                    'number.min': 'Quantity must be at least 1',
+                    'any.required': 'Quantity is required'
+                })
+        })
+    ).optional()
+        .messages({
+            'array.base': 'Batch selections must be an array'
+        })
+});
+
+// Worker validation for receiving supplier order
 export const receiveSupplierOrderSchema = Joi.object({
     status: Joi.string().valid('Delivered').required(),
     note: Joi.string().allow('', null),
