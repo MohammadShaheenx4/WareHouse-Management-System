@@ -2,7 +2,7 @@ import { DataTypes } from 'sequelize';
 import sequelize from '../Connection.js';
 import customerModel from './customer.model.js';
 import deliveryEmployeeModel from './deliveryEmployee.model.js';
-import warehouseEmployeeModel from './WareHouseEmployee.model.js'; // NEW: Add this import
+import warehouseEmployeeModel from './WareHouseEmployee.model.js';
 import userModel from './user.model.js';
 
 const customerOrderModel = sequelize.define('Customerorder', {
@@ -26,7 +26,7 @@ const customerOrderModel = sequelize.define('Customerorder', {
     },
     paymentMethod: {
         type: DataTypes.ENUM('cash', 'debt', 'partial', null),
-        allowNull: true,  // Allow null for initial order creation
+        allowNull: true,
         defaultValue: null
     },
     totalCost: {
@@ -49,20 +49,28 @@ const customerOrderModel = sequelize.define('Customerorder', {
         allowNull: true,
         defaultValue: null
     },
-    // NEW: Warehouse preparation tracking fields
-    preparedBy: {
-        type: DataTypes.INTEGER,
-        allowNull: true,
-        references: {
-            model: 'warehouseemployee',
-            key: 'id'
-        },
-        comment: 'Warehouse employee who prepared the order'
-    },
-    preparedAt: {
+    // NEW: Multiple warehouse employees can prepare the same order
+    preparationStartedAt: {
         type: DataTypes.DATE,
         allowNull: true,
         comment: 'Timestamp when order preparation started'
+    },
+    preparationCompletedAt: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        comment: 'Timestamp when order preparation was completed'
+    },
+    // NEW: JSON field to store batch allocation details
+    batchAllocation: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+        comment: 'JSON string storing batch allocation details for preparation'
+    },
+    // NEW: Preparation method - automatically determined based on request
+    preparationMethod: {
+        type: DataTypes.ENUM('auto_fifo', 'manual_batches'),
+        allowNull: true,
+        comment: 'Method used for preparation - automatically determined'
     },
     // Delivery tracking fields
     deliveryEmployeeId: {
@@ -86,9 +94,9 @@ const customerOrderModel = sequelize.define('Customerorder', {
         allowNull: true
     },
     signatureConfiremed: {
-        type: DataTypes.STRING(500),  // Changed from BOOLEAN to STRING
-        allowNull: true,              // Changed to allow null
-        defaultValue: null,           // Changed default to null
+        type: DataTypes.STRING(500),
+        allowNull: true,
+        defaultValue: null,
         comment: 'Cloudinary URL of customer signature image for delivery confirmation'
     },
     assignedAt: {
@@ -115,30 +123,17 @@ customerOrderModel.belongsTo(customerModel, {
     as: 'customer'
 });
 
-// Include this if you want to access orders from customer model
 customerModel.hasMany(customerOrderModel, {
     foreignKey: 'customerId',
     as: 'orders'
 });
 
-// NEW: Warehouse employee association for preparation tracking
-customerOrderModel.belongsTo(warehouseEmployeeModel, {
-    foreignKey: 'preparedBy',
-    as: 'preparer'
-});
-
-warehouseEmployeeModel.hasMany(customerOrderModel, {
-    foreignKey: 'preparedBy',
-    as: 'preparedOrders'
-});
-
-// Delivery employee associations - updated for multi-order support
+// Delivery employee associations
 customerOrderModel.belongsTo(deliveryEmployeeModel, {
     foreignKey: 'deliveryEmployeeId',
     as: 'deliveryEmployee'
 });
 
-// Allow delivery employee to have multiple assigned orders
 deliveryEmployeeModel.hasMany(customerOrderModel, {
     foreignKey: 'deliveryEmployeeId',
     as: 'assignedOrders'

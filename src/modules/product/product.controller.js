@@ -1,23 +1,29 @@
 import productModel from "../../../DB/Models/product.model.js";
 import categoryModel from "../../../DB/Models/category.model.js";
+import productBatchModel from "../../../DB/Models/productPatch.model.js";
 import cloudinary from "../../utils/cloudinary.js";
 import { Op } from "sequelize";
+import sequelize from "../../../DB/Connection.js";
 import { createProductSchema, updateProductSchema, validateProductId, fileValidation } from "./product.validation.js";
 import productSupplierModel from "../../../DB/Models/productSupplier.model.js";
 import supplierModel from "../../../DB/Models/supplier.model.js";
 import userModel from "../../../DB/Models/user.model.js";
+import { checkExistingBatches, createProductBatch, generateBatchNumber } from "../../utils/batchManagement.js";
 import cors from 'cors'
 
 /**
- * @desc    Create a new product with suppliers
+ * @desc    Create a new product with automatic batch creation
  * @route   POST /api/products
  * @access  Admin
  */
 export const createProduct = async (req, res) => {
+    const transaction = await sequelize.transaction();
+
     try {
         // Validate request body
         const { error } = createProductSchema.validate(req.body);
         if (error) {
+            await transaction.rollback();
             return res.status(400).json({ message: error.details[0].message });
         }
 
@@ -25,6 +31,7 @@ export const createProduct = async (req, res) => {
         if (req.file) {
             const fileValidationResult = fileValidation.validate(req.file);
             if (fileValidationResult.error) {
+                await transaction.rollback();
                 return res.status(400).json({ message: fileValidationResult.error.details[0].message });
             }
         }
@@ -33,7 +40,8 @@ export const createProduct = async (req, res) => {
             name, costPrice, sellPrice, quantity,
             categoryId, categoryName, status = 'Active', barcode,
             warranty, prodDate, expDate, description,
-            supplierIds, supplierNames, lowStock = 10, unit // Add unit field
+            supplierIds, supplierNames, lowStock = 10, unit,
+            supplierOrderId // Optional supplier order reference
         } = req.body;
 
         // Check for duplicate barcode if provided
@@ -43,6 +51,7 @@ export const createProduct = async (req, res) => {
             });
 
             if (existingProduct) {
+                await transaction.rollback();
                 return res.status(400).json({
                     message: `Barcode ${barcode} already exists in the system. Please use a unique barcode.`
                 });
@@ -66,6 +75,7 @@ export const createProduct = async (req, res) => {
             });
 
             if (!category) {
+                await transaction.rollback();
                 return res.status(404).json({ message: `Category '${categoryName}' not found` });
             }
 
@@ -75,6 +85,7 @@ export const createProduct = async (req, res) => {
         // Double check if category exists
         const category = await categoryModel.findByPk(categoryId);
         if (!category) {
+            await transaction.rollback();
             return res.status(404).json({ message: 'Category not found' });
         }
 
@@ -92,6 +103,7 @@ export const createProduct = async (req, res) => {
             });
 
             if (users.length === 0) {
+                await transaction.rollback();
                 return res.status(404).json({
                     message: `No users found with names: ${supplierNames.join(', ')}`
                 });
@@ -117,6 +129,7 @@ export const createProduct = async (req, res) => {
 
             // Check if at least one supplier was found
             if (foundSupplierIds.length === 0) {
+                await transaction.rollback();
                 return res.status(404).json({
                     message: `No suppliers found with names: ${supplierNames.join(', ')}`
                 });
@@ -129,6 +142,7 @@ export const createProduct = async (req, res) => {
             );
 
             if (notFoundNames.length > 0) {
+                await transaction.rollback();
                 return res.status(404).json({
                     message: `The following suppliers were not found: ${notFoundNames.join(', ')}`
                 });
@@ -157,6 +171,7 @@ export const createProduct = async (req, res) => {
                 const foundIds = suppliers.map(supplier => supplier.id);
                 const notFoundIds = numericSupplierIds.filter(id => !foundIds.includes(id));
 
+                await transaction.rollback();
                 return res.status(404).json({
                     message: `The following supplier IDs were not found: ${notFoundIds.join(', ')}`
                 });
@@ -181,7 +196,32 @@ export const createProduct = async (req, res) => {
             prodDate: prodDate || null,
             expDate: expDate || null,
             description: description || null
-        });
+        }, { transaction });
+
+        // NEW: Create batch if product has quantity > 0
+        let batchCreated = false;
+        if (quantity > 0) {
+            // Determine which supplier provided this initial stock
+            const primarySupplierId = finalSupplierIds.length > 0 ? finalSupplierIds[0] : null;
+
+            // Auto-generate batch number
+            const batchNumber = await generateBatchNumber(newProduct.productId, prodDate);
+
+            const batchData = {
+                productId: newProduct.productId,
+                quantity: quantity,
+                prodDate: prodDate || null,
+                expDate: expDate || null,
+                supplierId: primarySupplierId,
+                supplierOrderId: supplierOrderId || null,
+                costPrice: costPrice,
+                batchNumber: batchNumber,
+                notes: `Initial stock batch created with product`
+            };
+
+            await createProductBatch(batchData, transaction);
+            batchCreated = true;
+        }
 
         // Associate suppliers with the product
         if (finalSupplierIds.length > 0) {
@@ -192,7 +232,7 @@ export const createProduct = async (req, res) => {
                 status: 'Active' // Set default status to Active
             }));
 
-            await productSupplierModel.bulkCreate(productSupplierEntries);
+            await productSupplierModel.bulkCreate(productSupplierEntries, { transaction });
         }
 
         // Upload image to cloudinary if provided
@@ -202,16 +242,25 @@ export const createProduct = async (req, res) => {
             });
 
             // Update product with image URL
-            await newProduct.update({ image: secure_url });
+            await newProduct.update({ image: secure_url }, { transaction });
         }
 
-        // Get the created product with category and supplier information
+        // Commit transaction
+        await transaction.commit();
+
+        // Get the created product with category and supplier information including batches
         const createdProduct = await productModel.findByPk(newProduct.productId, {
             include: [
                 {
                     model: categoryModel,
                     as: 'category',
                     attributes: ['categoryID', 'categoryName']
+                },
+                {
+                    model: productBatchModel,
+                    as: 'batches',
+                    where: { status: 'Active' },
+                    required: false
                 },
                 {
                     model: supplierModel,
@@ -230,42 +279,56 @@ export const createProduct = async (req, res) => {
         });
 
         // Check if the created product is already low stock and trigger alert
-        if (newProduct.quantity <= newProduct.lowStock) {
-            // Note: In a real application, you might want to emit this as an event
-            // or add it to a queue for processing rather than handling it synchronously
+        const lowStockAlert = newProduct.quantity <= newProduct.lowStock ? {
+            message: `Product is below low stock threshold (${newProduct.quantity}/${newProduct.lowStock})`,
+            isLowStock: true
+        } : { isLowStock: false };
+
+        if (lowStockAlert.isLowStock) {
             console.warn(`ALERT: Product "${newProduct.name}" is below low stock threshold (${newProduct.quantity}/${newProduct.lowStock})`);
         }
 
         return res.status(201).json({
-            message: 'Product created successfully',
+            message: 'Product created successfully with batch tracking',
             product: createdProduct,
-            lowStockAlert: newProduct.quantity <= newProduct.lowStock ? {
-                message: `Product is below low stock threshold (${newProduct.quantity}/${newProduct.lowStock})`,
-                isLowStock: true
-            } : { isLowStock: false }
+            lowStockAlert,
+            batchInfo: {
+                created: batchCreated,
+                quantity: quantity,
+                dates: {
+                    prodDate: prodDate || null,
+                    expDate: expDate || null
+                }
+            }
         });
+
     } catch (error) {
+        await transaction.rollback();
         console.error('Error creating product:', error);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
 
 /**
- * @desc    Update product
+ * @desc    Update product with batch conflict checking
  * @route   PUT /api/products/:id
  * @access  Admin
  */
 export const updateProduct = async (req, res) => {
+    const transaction = await sequelize.transaction();
+
     try {
         // Validate ID parameter
         const idValidation = validateProductId.validate({ id: req.params.id });
         if (idValidation.error) {
+            await transaction.rollback();
             return res.status(400).json({ message: idValidation.error.details[0].message });
         }
 
         // Validate request body
         const { error } = updateProductSchema.validate(req.body);
         if (error) {
+            await transaction.rollback();
             return res.status(400).json({ message: error.details[0].message });
         }
 
@@ -273,6 +336,7 @@ export const updateProduct = async (req, res) => {
         if (req.file) {
             const fileValidationResult = fileValidation.validate(req.file);
             if (fileValidationResult.error) {
+                await transaction.rollback();
                 return res.status(400).json({ message: fileValidationResult.error.details[0].message });
             }
         }
@@ -281,6 +345,7 @@ export const updateProduct = async (req, res) => {
         const product = await productModel.findByPk(productId);
 
         if (!product) {
+            await transaction.rollback();
             return res.status(404).json({ message: 'Product not found' });
         }
 
@@ -288,7 +353,7 @@ export const updateProduct = async (req, res) => {
             name, costPrice, sellPrice, quantity,
             categoryId, categoryName, status, barcode,
             warranty, prodDate, expDate, description,
-            supplierIds, supplierNames, lowStock, unit // Add unit field
+            supplierIds, supplierNames, lowStock, unit
         } = req.body;
 
         // Convert supplierNames to array if it's not
@@ -308,6 +373,7 @@ export const updateProduct = async (req, res) => {
             });
 
             if (!category) {
+                await transaction.rollback();
                 return res.status(404).json({ message: `Category '${categoryName}' not found` });
             }
 
@@ -318,18 +384,80 @@ export const updateProduct = async (req, res) => {
         if (categoryId) {
             const category = await categoryModel.findByPk(categoryId);
             if (!category) {
+                await transaction.rollback();
                 return res.status(404).json({ message: 'Category not found' });
             }
         }
 
-        // Update with provided fields
+        // Process supplier information first (same logic as before)
+        let finalSupplierIds = [];
+        if ((supplierIds && Array.isArray(supplierIds)) || (supplierNames && Array.isArray(supplierNames))) {
+            // If supplierNames is provided, convert them to supplier IDs
+            if (supplierNames && Array.isArray(supplierNames) && supplierNames.length > 0) {
+                const users = await userModel.findAll({
+                    where: { name: { [Op.in]: supplierNames } }
+                });
+
+                if (users.length === 0) {
+                    await transaction.rollback();
+                    return res.status(404).json({
+                        message: `No users found with names: ${supplierNames.join(', ')}`
+                    });
+                }
+
+                const userIds = users.map(user => user.userId);
+                const suppliersByName = await supplierModel.findAll({
+                    where: { userId: { [Op.in]: userIds } },
+                    include: [{
+                        model: userModel,
+                        as: 'user',
+                        attributes: ['userId', 'name']
+                    }]
+                });
+
+                const foundSupplierIds = suppliersByName.map(supplier => supplier.id);
+                if (foundSupplierIds.length === 0) {
+                    await transaction.rollback();
+                    return res.status(404).json({
+                        message: `No suppliers found with names: ${supplierNames.join(', ')}`
+                    });
+                }
+
+                finalSupplierIds = [...foundSupplierIds];
+            }
+
+            // If supplierIds is provided, verify they exist
+            if (supplierIds && Array.isArray(supplierIds) && supplierIds.length > 0) {
+                const numericSupplierIds = supplierIds.map(id =>
+                    typeof id === 'string' ? parseInt(id) : id
+                );
+
+                const suppliers = await supplierModel.findAll({
+                    where: { id: { [Op.in]: numericSupplierIds } }
+                });
+
+                if (suppliers.length !== numericSupplierIds.length) {
+                    const foundIds = suppliers.map(supplier => supplier.id);
+                    const notFoundIds = numericSupplierIds.filter(id => !foundIds.includes(id));
+
+                    await transaction.rollback();
+                    return res.status(404).json({
+                        message: `The following supplier IDs were not found: ${notFoundIds.join(', ')}`
+                    });
+                }
+
+                finalSupplierIds = [...new Set([...finalSupplierIds, ...numericSupplierIds])];
+            }
+        }
+
+        // Update product fields
         const updateData = {
             ...(name !== undefined && { name }),
             ...(costPrice !== undefined && { costPrice }),
             ...(sellPrice !== undefined && { sellPrice }),
             ...(quantity !== undefined && { quantity }),
-            ...(lowStock !== undefined && { lowStock }), // Include lowStock field
-            ...(unit !== undefined && { unit }), // Include unit field
+            ...(lowStock !== undefined && { lowStock }),
+            ...(unit !== undefined && { unit }),
             ...(categoryId !== undefined && { categoryId }),
             ...(status !== undefined && { status }),
             ...(barcode !== undefined && { barcode }),
@@ -339,98 +467,10 @@ export const updateProduct = async (req, res) => {
             ...(description !== undefined && { description })
         };
 
-        await product.update(updateData);
+        await product.update(updateData, { transaction });
 
-        // Process supplier information if provided
+        // Handle supplier updates if provided
         if ((supplierIds && Array.isArray(supplierIds)) || (supplierNames && Array.isArray(supplierNames))) {
-            let finalSupplierIds = [];
-
-            // If supplierNames is provided, convert them to supplier IDs by looking up users first
-            if (supplierNames && Array.isArray(supplierNames) && supplierNames.length > 0) {
-                // First find the users by name
-                const users = await userModel.findAll({
-                    where: {
-                        name: {
-                            [Op.in]: supplierNames
-                        }
-                    }
-                });
-
-                if (users.length === 0) {
-                    return res.status(404).json({
-                        message: `No users found with names: ${supplierNames.join(', ')}`
-                    });
-                }
-
-                // Now find suppliers that have userIds matching these users
-                const userIds = users.map(user => user.userId);
-                const suppliersByName = await supplierModel.findAll({
-                    where: {
-                        userId: {
-                            [Op.in]: userIds
-                        }
-                    },
-                    include: [{
-                        model: userModel,
-                        as: 'user',
-                        attributes: ['userId', 'name']
-                    }]
-                });
-
-                // Get IDs from found suppliers
-                const foundSupplierIds = suppliersByName.map(supplier => supplier.id);
-
-                // Check if at least one supplier was found
-                if (foundSupplierIds.length === 0) {
-                    return res.status(404).json({
-                        message: `No suppliers found with names: ${supplierNames.join(', ')}`
-                    });
-                }
-
-                // Check if all supplier names were found
-                const foundNames = suppliersByName.map(supplier => supplier.user.name);
-                const notFoundNames = supplierNames.filter(name =>
-                    !foundNames.includes(name)
-                );
-
-                if (notFoundNames.length > 0) {
-                    return res.status(404).json({
-                        message: `The following suppliers were not found: ${notFoundNames.join(', ')}`
-                    });
-                }
-
-                finalSupplierIds = [...foundSupplierIds];
-            }
-
-            // If supplierIds is provided, verify they exist and add to finalSupplierIds
-            if (supplierIds && Array.isArray(supplierIds) && supplierIds.length > 0) {
-                // Convert string IDs to numbers if needed
-                const numericSupplierIds = supplierIds.map(id =>
-                    typeof id === 'string' ? parseInt(id) : id
-                );
-
-                const suppliers = await supplierModel.findAll({
-                    where: {
-                        id: {
-                            [Op.in]: numericSupplierIds
-                        }
-                    }
-                });
-
-                // Check if all supplier IDs were found
-                if (suppliers.length !== numericSupplierIds.length) {
-                    const foundIds = suppliers.map(supplier => supplier.id);
-                    const notFoundIds = numericSupplierIds.filter(id => !foundIds.includes(id));
-
-                    return res.status(404).json({
-                        message: `The following supplier IDs were not found: ${notFoundIds.join(', ')}`
-                    });
-                }
-
-                // Add to finalSupplierIds, avoiding duplicates
-                finalSupplierIds = [...new Set([...finalSupplierIds, ...numericSupplierIds])];
-            }
-
             // Remove all existing product-supplier associations
             await productSupplierModel.destroy({
                 where: { productId }
@@ -440,10 +480,12 @@ export const updateProduct = async (req, res) => {
             if (finalSupplierIds.length > 0) {
                 const productSupplierEntries = finalSupplierIds.map(supplierId => ({
                     productId,
-                    supplierId
+                    supplierId,
+                    priceSupplier: costPrice || product.costPrice,
+                    status: 'Active'
                 }));
 
-                await productSupplierModel.bulkCreate(productSupplierEntries);
+                await productSupplierModel.bulkCreate(productSupplierEntries, { transaction });
             }
         }
 
@@ -454,16 +496,25 @@ export const updateProduct = async (req, res) => {
             });
 
             // Update product with image URL
-            await product.update({ image: secure_url });
+            await product.update({ image: secure_url }, { transaction });
         }
 
-        // Get updated product with category and supplier information
+        await transaction.commit();
+
+        // Get updated product with batches and other associations
         const updatedProduct = await productModel.findByPk(productId, {
             include: [
                 {
                     model: categoryModel,
                     as: 'category',
                     attributes: ['categoryID', 'categoryName']
+                },
+                {
+                    model: productBatchModel,
+                    as: 'batches',
+                    where: { status: 'Active' },
+                    required: false,
+                    order: [['prodDate', 'ASC'], ['receivedDate', 'ASC']]
                 },
                 {
                     model: supplierModel,
@@ -482,8 +533,8 @@ export const updateProduct = async (req, res) => {
         });
 
         // Check if the updated product is now low stock and trigger alert
-        const finalQuantity = quantity !== undefined ? quantity : product.quantity;
-        const finalLowStock = lowStock !== undefined ? lowStock : product.lowStock;
+        const finalQuantity = updatedProduct.quantity;
+        const finalLowStock = updatedProduct.lowStock;
 
         let lowStockAlert = { isLowStock: false };
         if (finalQuantity <= finalLowStock) {
@@ -499,13 +550,15 @@ export const updateProduct = async (req, res) => {
             product: updatedProduct,
             lowStockAlert
         });
+
     } catch (error) {
+        await transaction.rollback();
         console.error('Error updating product:', error);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
 
-// Keep all other existing methods unchanged
+// Updated methods to include batch information
 export const getAllProducts = async (req, res) => {
     try {
         // Get query parameters for filtering
@@ -516,7 +569,8 @@ export const getAllProducts = async (req, res) => {
             category, // This can be either category name or ID
             supplier, // This can be either supplier name or ID
             status,
-            inStock
+            inStock,
+            includeBatches // NEW: Option to include batch info
         } = req.query;
 
         // Build filter object
@@ -565,20 +619,17 @@ export const getAllProducts = async (req, res) => {
             filter.quantity = { [Op.gt]: 0 };
         }
 
-        // Handle supplier filtering
+        // Handle supplier filtering (same logic as before)
         if (supplier) {
             let productIds = [];
 
-            // Check if supplier parameter is a number (ID) or string (name)
             if (!isNaN(supplier)) {
-                // It's an ID, find products directly from junction table
                 const productSuppliers = await productSupplierModel.findAll({
                     where: { supplierId: parseInt(supplier) },
                     attributes: ['productId']
                 });
 
                 if (productSuppliers.length === 0) {
-                    // No products with this supplier, return empty result
                     return res.status(200).json({
                         message: 'Products retrieved successfully',
                         count: 0,
@@ -588,13 +639,11 @@ export const getAllProducts = async (req, res) => {
 
                 productIds = productSuppliers.map(ps => ps.productId);
             } else {
-                // It's a name, find the users with this name first
                 const users = await userModel.findAll({
                     where: { name: { [Op.like]: `%${supplier}%` } }
                 });
 
                 if (users.length === 0) {
-                    // No users with this name, return empty result
                     return res.status(200).json({
                         message: 'Products retrieved successfully',
                         count: 0,
@@ -602,13 +651,11 @@ export const getAllProducts = async (req, res) => {
                     });
                 }
 
-                // Find suppliers with these user IDs
                 const suppliers = await supplierModel.findAll({
                     where: { userId: { [Op.in]: users.map(user => user.userId) } }
                 });
 
                 if (suppliers.length === 0) {
-                    // No suppliers for these users, return empty result
                     return res.status(200).json({
                         message: 'Products retrieved successfully',
                         count: 0,
@@ -616,14 +663,12 @@ export const getAllProducts = async (req, res) => {
                     });
                 }
 
-                // Find products for these suppliers
                 const productSuppliers = await productSupplierModel.findAll({
                     where: { supplierId: { [Op.in]: suppliers.map(s => s.id) } },
                     attributes: ['productId']
                 });
 
                 if (productSuppliers.length === 0) {
-                    // No products with these suppliers, return empty result
                     return res.status(200).json({
                         message: 'Products retrieved successfully',
                         count: 0,
@@ -634,7 +679,6 @@ export const getAllProducts = async (req, res) => {
                 productIds = productSuppliers.map(ps => ps.productId);
             }
 
-            // Add product IDs to filter
             filter.productId = { [Op.in]: productIds };
         }
 
@@ -660,16 +704,29 @@ export const getAllProducts = async (req, res) => {
             }
         ];
 
+        // NEW: Optionally include batch information
+        if (includeBatches === 'true') {
+            includeOptions.push({
+                model: productBatchModel,
+                as: 'batches',
+                where: { status: 'Active', quantity: { [Op.gt]: 0 } },
+                required: false,
+                order: [['prodDate', 'ASC'], ['receivedDate', 'ASC']]
+            });
+        }
+
         // Get products with category and supplier information
         const products = await productModel.findAll({
             where: filter,
-            include: includeOptions
+            include: includeOptions,
+            order: [['createdAt', 'DESC']]
         });
 
         return res.status(200).json({
             message: 'Products retrieved successfully',
             count: products.length,
-            products
+            products,
+            includedBatches: includeBatches === 'true'
         });
     } catch (error) {
         console.error('Error fetching products:', error);
@@ -686,29 +743,42 @@ export const getProductById = async (req, res) => {
         }
 
         const productId = req.params.id;
+        const { includeBatches } = req.query;
+
+        // Prepare include options
+        const includeOptions = [
+            {
+                model: categoryModel,
+                as: 'category',
+                attributes: ['categoryID', 'categoryName']
+            },
+            {
+                model: supplierModel,
+                as: 'suppliers',
+                attributes: ['id', 'userId', 'accountBalance'],
+                through: { attributes: [] }, // Don't include join table attributes
+                include: [
+                    {
+                        model: userModel,
+                        as: 'user',
+                        attributes: ['userId', 'name', 'email', 'phoneNumber']
+                    }
+                ]
+            }
+        ];
+
+        // NEW: Include batch information by default or when requested
+        if (includeBatches !== 'false') {
+            includeOptions.push({
+                model: productBatchModel,
+                as: 'batches',
+                order: [['prodDate', 'ASC'], ['receivedDate', 'ASC']]
+            });
+        }
 
         // Get product with category and supplier information
         const product = await productModel.findByPk(productId, {
-            include: [
-                {
-                    model: categoryModel,
-                    as: 'category',
-                    attributes: ['categoryID', 'categoryName']
-                },
-                {
-                    model: supplierModel,
-                    as: 'suppliers',
-                    attributes: ['id', 'userId', 'accountBalance'],
-                    through: { attributes: [] }, // Don't include join table attributes
-                    include: [
-                        {
-                            model: userModel,
-                            as: 'user',
-                            attributes: ['userId', 'name', 'email', 'phoneNumber']
-                        }
-                    ]
-                }
-            ]
+            include: includeOptions
         });
 
         if (!product) {
@@ -717,7 +787,8 @@ export const getProductById = async (req, res) => {
 
         return res.status(200).json({
             message: 'Product retrieved successfully',
-            product
+            product,
+            includedBatches: includeBatches !== 'false'
         });
     } catch (error) {
         console.error('Error fetching product:', error);
@@ -740,7 +811,7 @@ export const deleteProduct = async (req, res) => {
             return res.status(404).json({ message: 'Product not found' });
         }
 
-        // Delete the product (this will also delete related product-supplier entries due to CASCADE)
+        // Delete the product (this will also delete related batches and product-supplier entries due to CASCADE)
         await product.destroy();
 
         return res.status(200).json({
@@ -754,41 +825,74 @@ export const deleteProduct = async (req, res) => {
 
 export const getLowStockProducts = async (req, res) => {
     try {
-        // Default threshold is 10, can be changed via query parameter
-        const threshold = req.query.threshold ? parseInt(req.query.threshold) : 10;
+        // Default threshold is based on product's lowStock setting, can be overridden
+        const threshold = req.query.threshold ? parseInt(req.query.threshold) : null;
+        const { includeBatches } = req.query;
+
+        // Build where condition for low stock
+        const whereCondition = {
+            status: 'Active',
+            [Op.or]: [
+                // Use product's own lowStock threshold
+                sequelize.where(
+                    sequelize.col('quantity'),
+                    Op.lte,
+                    sequelize.col('lowStock')
+                )
+            ]
+        };
+
+        // Add global threshold if provided
+        if (threshold) {
+            whereCondition[Op.or].push({
+                quantity: { [Op.lt]: threshold }
+            });
+        }
+
+        const includeOptions = [
+            {
+                model: categoryModel,
+                as: 'category',
+                attributes: ['categoryID', 'categoryName']
+            },
+            {
+                model: supplierModel,
+                as: 'suppliers',
+                attributes: ['id', 'userId', 'accountBalance'],
+                through: { attributes: [] },
+                include: [
+                    {
+                        model: userModel,
+                        as: 'user',
+                        attributes: ['userId', 'name', 'email', 'phoneNumber']
+                    }
+                ]
+            }
+        ];
+
+        // Include batch information if requested
+        if (includeBatches === 'true') {
+            includeOptions.push({
+                model: productBatchModel,
+                as: 'batches',
+                where: { status: 'Active', quantity: { [Op.gt]: 0 } },
+                required: false,
+                order: [['expDate', 'ASC']]
+            });
+        }
 
         const products = await productModel.findAll({
-            where: {
-                quantity: { [Op.lt]: threshold },
-                status: 'Active'
-            },
-            include: [
-                {
-                    model: categoryModel,
-                    as: 'category',
-                    attributes: ['categoryID', 'categoryName']
-                },
-                {
-                    model: supplierModel,
-                    as: 'suppliers',
-                    attributes: ['id', 'userId', 'accountBalance'],
-                    through: { attributes: [] }, // Don't include join table attributes
-                    include: [
-                        {
-                            model: userModel,
-                            as: 'user',
-                            attributes: ['userId', 'name', 'email', 'phoneNumber']
-                        }
-                    ]
-                }
-            ],
+            where: whereCondition,
+            include: includeOptions,
             order: [['quantity', 'ASC']]
         });
 
         return res.status(200).json({
             message: 'Low stock products retrieved successfully',
             count: products.length,
-            products
+            products,
+            thresholdUsed: threshold || 'Product-specific lowStock values',
+            includedBatches: includeBatches === 'true'
         });
     } catch (error) {
         console.error('Error fetching low stock products:', error);
@@ -799,7 +903,15 @@ export const getLowStockProducts = async (req, res) => {
 export const getDashboardStats = async (req, res) => {
     try {
         // Run all queries in parallel for better performance
-        const [totalProducts, activeProducts, inactiveProducts, totalCategories] = await Promise.all([
+        const [
+            totalProducts,
+            activeProducts,
+            inactiveProducts,
+            totalCategories,
+            lowStockProducts,
+            expiringBatches,
+            totalBatches
+        ] = await Promise.all([
             // Get total number of products
             productModel.count(),
 
@@ -814,7 +926,37 @@ export const getDashboardStats = async (req, res) => {
             }),
 
             // Get total number of categories
-            categoryModel.count()
+            categoryModel.count(),
+
+            // NEW: Get low stock products count
+            productModel.count({
+                where: {
+                    status: 'Active',
+                    [Op.or]: [
+                        sequelize.where(
+                            sequelize.col('quantity'),
+                            Op.lte,
+                            sequelize.col('lowStock')
+                        )
+                    ]
+                }
+            }),
+
+            // NEW: Get expiring batches count (next 30 days)
+            productBatchModel.count({
+                where: {
+                    status: 'Active',
+                    quantity: { [Op.gt]: 0 },
+                    expDate: {
+                        [Op.between]: [new Date(), new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)]
+                    }
+                }
+            }),
+
+            // NEW: Get total batches count
+            productBatchModel.count({
+                where: { status: 'Active' }
+            })
         ]);
 
         return res.status(200).json({
@@ -823,7 +965,10 @@ export const getDashboardStats = async (req, res) => {
                 totalProducts,
                 activeProducts,
                 inactiveProducts,
-                totalCategories
+                totalCategories,
+                lowStockProducts,
+                expiringBatches,
+                totalBatches
             }
         });
     } catch (error) {

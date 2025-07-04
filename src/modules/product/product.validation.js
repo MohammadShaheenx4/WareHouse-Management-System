@@ -62,39 +62,39 @@ export const createProductSchema = Joi.object({
     warranty: Joi.string().allow('', null),
     prodDate: Joi.date().allow(null),
     expDate: Joi.date().allow(null),
-    description: Joi.string().allow('', null)
+    description: Joi.string().allow('', null),
+    // NEW: Batch-related fields
+    supplierOrderId: Joi.number().integer().positive().allow(null).optional()
+        .messages({
+            'number.base': 'Supplier order ID must be a number',
+            'number.integer': 'Supplier order ID must be an integer',
+            'number.positive': 'Supplier order ID must be positive'
+        })
 }).custom((value, helpers) => {
     // Ensure at least one of categoryId or categoryName is provided
     if (!value.categoryId && !value.categoryName) {
         return helpers.error('any.custom', { message: 'Either categoryId or categoryName must be provided' });
     }
 
-    // Ensure at least one of supplierIds or supplierNames is provided
-    if (value.supplierIds === undefined && value.supplierNames === undefined) {
-        return value; // Suppliers can be optional
+    // Validate expiry date is after production date
+    if (value.prodDate && value.expDate) {
+        const prodDate = new Date(value.prodDate);
+        const expDate = new Date(value.expDate);
+
+        if (expDate <= prodDate) {
+            return helpers.error('any.custom', { message: 'Expiry date must be after production date' });
+        }
     }
 
-    // If supplierIds is empty array and supplierNames is empty array, it's valid (no suppliers)
-    if (
-        (Array.isArray(value.supplierIds) && value.supplierIds.length === 0) &&
-        (Array.isArray(value.supplierNames) && value.supplierNames.length === 0)
-    ) {
-        return value;
-    }
+    // Validate expiry date is not in the past
+    if (value.expDate) {
+        const expDate = new Date(value.expDate);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0); // Reset time to start of day
 
-    // If one is provided, it should not be empty
-    if (
-        (Array.isArray(value.supplierIds) && value.supplierIds.length === 0) &&
-        (!Array.isArray(value.supplierNames) || value.supplierNames.length === 0)
-    ) {
-        return helpers.error('any.custom', { message: 'At least one supplier must be provided' });
-    }
-
-    if (
-        (Array.isArray(value.supplierNames) && value.supplierNames.length === 0) &&
-        (!Array.isArray(value.supplierIds) || value.supplierIds.length === 0)
-    ) {
-        return helpers.error('any.custom', { message: 'At least one supplier must be provided' });
+        if (expDate < today) {
+            return helpers.error('any.custom', { message: 'Expiry date cannot be in the past' });
+        }
     }
 
     return value;
@@ -158,8 +158,48 @@ export const updateProductSchema = Joi.object({
     warranty: Joi.string().allow('', null),
     prodDate: Joi.date().allow(null),
     expDate: Joi.date().allow(null),
-    description: Joi.string().allow('', null)
-}).min(1).message('Please provide at least one field to update');
+    description: Joi.string().allow('', null),
+    // NEW: Batch-related fields
+    supplierOrderId: Joi.number().integer().positive().allow(null).optional()
+        .messages({
+            'number.base': 'Supplier order ID must be a number',
+            'number.integer': 'Supplier order ID must be an integer',
+            'number.positive': 'Supplier order ID must be positive'
+        })
+}).custom((value, helpers) => {
+    // Ensure at least one field is being updated
+    const updateFields = ['name', 'costPrice', 'sellPrice', 'quantity', 'lowStock', 'unit',
+        'categoryId', 'categoryName', 'status', 'barcode', 'warranty', 'prodDate',
+        'expDate', 'description', 'supplierIds', 'supplierNames', 'supplierOrderId'];
+
+    const hasUpdate = updateFields.some(field => value[field] !== undefined);
+    if (!hasUpdate) {
+        return helpers.error('any.custom', { message: 'Please provide at least one field to update' });
+    }
+
+    // Validate expiry date is after production date
+    if (value.prodDate && value.expDate) {
+        const prodDate = new Date(value.prodDate);
+        const expDate = new Date(value.expDate);
+
+        if (expDate <= prodDate) {
+            return helpers.error('any.custom', { message: 'Expiry date must be after production date' });
+        }
+    }
+
+    // Validate expiry date is not in the past (only for new expiry dates)
+    if (value.expDate) {
+        const expDate = new Date(value.expDate);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0); // Reset time to start of day
+
+        if (expDate < today) {
+            return helpers.error('any.custom', { message: 'Expiry date cannot be in the past' });
+        }
+    }
+
+    return value;
+});
 
 // Validate product ID parameter
 export const validateProductId = Joi.object({
@@ -179,7 +219,7 @@ export const fileValidation = Joi.object({
     encoding: Joi.string().required(),
     mimetype: Joi.string().valid('image/jpeg', 'image/png', 'image/jpg', 'image/gif', 'image/webp').required()
         .messages({
-            'any.only': 'Only image files (jpeg, png, jpg, gif) are allowed'
+            'any.only': 'Only image files (jpeg, png, jpg, gif, webp) are allowed'
         }),
     size: Joi.number().max(5 * 1024 * 1024).required()
         .messages({
@@ -187,3 +227,96 @@ export const fileValidation = Joi.object({
         }),
     path: Joi.string().required()
 }).unknown(true);
+
+// NEW: Batch-specific validation schemas
+export const batchQuerySchema = Joi.object({
+    productId: Joi.number().integer().positive().required(),
+    includeExpired: Joi.boolean().default(false),
+    includeNearExpiry: Joi.boolean().default(true),
+    daysAhead: Joi.number().integer().min(1).max(365).default(30),
+    sortBy: Joi.string().valid('prodDate', 'expDate', 'receivedDate', 'quantity').default('prodDate')
+});
+
+// NEW: Product filtering validation with batch options
+export const productFilterSchema = Joi.object({
+    name: Joi.string().optional(),
+    minPrice: Joi.number().positive().optional(),
+    maxPrice: Joi.number().positive().optional(),
+    category: Joi.alternatives().try(
+        Joi.number().integer().positive(),
+        Joi.string()
+    ).optional(),
+    supplier: Joi.alternatives().try(
+        Joi.number().integer().positive(),
+        Joi.string()
+    ).optional(),
+    status: Joi.string().valid('Active', 'NotActive').optional(),
+    inStock: Joi.boolean().optional(),
+    includeBatches: Joi.boolean().default(false),
+    lowStockOnly: Joi.boolean().default(false),
+    hasExpiring: Joi.boolean().optional(), // Products with expiring batches
+    expiringDays: Joi.number().integer().min(1).max(365).default(30),
+    page: Joi.number().integer().min(1).default(1),
+    limit: Joi.number().integer().min(1).max(100).default(20),
+    sortBy: Joi.string().valid('name', 'quantity', 'sellPrice', 'createdAt', 'expDate').default('createdAt'),
+    sortOrder: Joi.string().valid('ASC', 'DESC').default('DESC')
+});
+
+// NEW: Stock adjustment validation
+export const stockAdjustmentSchema = Joi.object({
+    adjustmentType: Joi.string().valid('add', 'subtract', 'set').required(),
+    quantity: Joi.number().integer().min(0).required(),
+    reason: Joi.string().required().max(500),
+    prodDate: Joi.date().allow(null).optional(),
+    expDate: Joi.date().allow(null).optional(),
+    batchId: Joi.number().integer().positive().optional(), // For adjusting specific batch
+    createBatch: Joi.boolean().default(true), // Whether to create new batch for additions
+    supplierOrderId: Joi.number().integer().positive().allow(null).optional()
+}).custom((value, helpers) => {
+    // Validate dates if both provided
+    if (value.prodDate && value.expDate) {
+        const prodDate = new Date(value.prodDate);
+        const expDate = new Date(value.expDate);
+
+        if (expDate <= prodDate) {
+            return helpers.error('any.custom', { message: 'Expiry date must be after production date' });
+        }
+    }
+
+    // For subtract/set operations, don't allow batch creation fields
+    if ((value.adjustmentType === 'subtract' || value.adjustmentType === 'set') &&
+        (value.prodDate || value.expDate || value.createBatch)) {
+        return helpers.error('any.custom', {
+            message: 'Batch creation fields (prodDate, expDate, createBatch) are only valid for add operations'
+        });
+    }
+
+    return value;
+});
+
+// Validation helper functions
+export const validationHelpers = {
+    // Validate batch number format (if manually provided)
+    isValidBatchNumber: (batchNumber) => {
+        // Format: P{productId}-{YYYYMMDD}-{sequence}
+        const pattern = /^P\d+-\d{8}-\d{3}$/;
+        return pattern.test(batchNumber);
+    },
+
+    // Check if date is within reasonable range
+    isReasonableDate: (date, maxYearsAhead = 5) => {
+        const checkDate = new Date(date);
+        const now = new Date();
+        const maxDate = new Date();
+        maxDate.setFullYear(now.getFullYear() + maxYearsAhead);
+
+        return checkDate >= now && checkDate <= maxDate;
+    },
+
+    // Validate supplier order reference
+    validateSupplierOrder: async (supplierOrderId, supplierId = null) => {
+        // This would check if supplier order exists and belongs to supplier
+        // Implementation depends on your supplier order model
+        return true; // Placeholder
+    }
+};

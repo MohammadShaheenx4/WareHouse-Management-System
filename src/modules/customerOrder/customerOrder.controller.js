@@ -1,16 +1,23 @@
+
 import customerOrderModel from "../../../DB/Models/ordercustomer.model.js";
+import orderPreparerModel from "../../../DB/Models/orderpreparer.model.js";
 import customerOrderItemModel from "../../../DB/Models/customerOrderItem.model.js";
 import customerModel from "../../../DB/Models/customer.model.js";
 import productModel from "../../../DB/Models/product.model.js";
+import productBatchModel from "../../../DB/Models/productPatch.model.js";
+import warehouseEmployeeModel from "../../../DB/Models/WareHouseEmployee.model.js";
 import userModel from "../../../DB/Models/user.model.js";
 import categoryModel from "../../../DB/Models/category.model.js";
 import { Op } from "sequelize";
 import sequelize from "../../../DB/Connection.js";
+import { getFIFOAllocation, updateBatchQuantities } from "../../utils/batchManagement.js";
 import {
     createOrderSchema,
     updateOrderStatusSchema,
     validateOrderId,
-    getCategoryProductsSchema
+    getCategoryProductsSchema,
+    startPreparationSchema,
+    completePreparationSchema
 } from "./customerOrder.validation.js";
 
 /**
@@ -657,3 +664,514 @@ export const getAllCategories = async (req, res) => {
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
+/**
+ * @desc    Start order preparation(multiple workers can work on same order)
+    * @route   POST / api / orders /: id / start - preparation
+        * @access  Warehouse Employee
+            */
+export const startOrderPreparation = async (req, res) => {
+    const transaction = await sequelize.transaction();
+
+    try {
+        const { error: idError } = validateOrderId.validate({ id: req.params.id });
+        if (idError) {
+            await transaction.rollback();
+            return res.status(400).json({ message: idError.details[0].message });
+        }
+
+        const { error: bodyError } = startPreparationSchema.validate(req.body);
+        if (bodyError) {
+            await transaction.rollback();
+            return res.status(400).json({ message: bodyError.details[0].message });
+        }
+
+        const orderId = req.params.id;
+        const { notes } = req.body;
+
+        // Get warehouse employee from authenticated user
+        const warehouseEmployee = await warehouseEmployeeModel.findOne({
+            where: { userId: req.user.userId }
+        });
+
+        if (!warehouseEmployee) {
+            await transaction.rollback();
+            return res.status(403).json({ message: 'Access denied. User is not a warehouse employee' });
+        }
+
+        const warehouseEmployeeId = warehouseEmployee.id;
+
+        // Get the order with items
+        const order = await customerOrderModel.findByPk(orderId, {
+            include: [
+                {
+                    model: customerOrderItemModel,
+                    as: 'items',
+                    include: [{
+                        model: productModel,
+                        as: 'product',
+                        attributes: ['productId', 'name', 'quantity']
+                    }]
+                },
+                {
+                    model: orderPreparerModel,
+                    as: 'preparers',
+                    include: [{
+                        model: warehouseEmployeeModel,
+                        as: 'warehouseEmployee',
+                        include: [{
+                            model: userModel,
+                            as: 'user',
+                            attributes: ['name']
+                        }]
+                    }]
+                }
+            ]
+        });
+
+        if (!order) {
+            await transaction.rollback();
+            return res.status(404).json({ message: 'Order not found' });
+        }
+
+        // Check if order can be prepared
+        if (!['Accepted', 'Preparing'].includes(order.status)) {
+            await transaction.rollback();
+            return res.status(400).json({
+                message: `Order cannot be prepared. Current status: ${order.status}`
+            });
+        }
+
+        // Check if this worker is already preparing this order
+        const existingPreparer = await orderPreparerModel.findOne({
+            where: {
+                orderId,
+                warehouseEmployeeId,
+                status: 'working'
+            }
+        });
+
+        if (existingPreparer) {
+            await transaction.rollback();
+            return res.status(400).json({
+                message: 'You are already preparing this order'
+            });
+        }
+
+        // Add this worker to the preparers
+        await orderPreparerModel.create({
+            orderId,
+            warehouseEmployeeId,
+            notes: notes || null,
+            status: 'working'
+        }, { transaction });
+
+        // Update order status to "Preparing" if it's not already
+        if (order.status === 'Accepted') {
+            await order.update({
+                status: 'Preparing',
+                preparationStartedAt: new Date()
+            }, { transaction });
+        }
+
+        // Get batch information and alerts for each product
+        const batchAlerts = [];
+        const itemsWithBatchInfo = [];
+
+        for (const item of order.items) {
+            const fifoAllocation = await getFIFOAllocation(item.productId, item.quantity);
+
+            itemsWithBatchInfo.push({
+                productId: item.productId,
+                productName: item.product.name,
+                requiredQuantity: item.quantity,
+                availableQuantity: item.product.quantity,
+                fifoAllocation,
+                canFulfill: fifoAllocation.canFulfill,
+                alerts: fifoAllocation.alerts || []
+            });
+
+            // Collect all alerts
+            if (fifoAllocation.alerts && fifoAllocation.alerts.length > 0) {
+                batchAlerts.push(...fifoAllocation.alerts.map(alert => ({
+                    productId: item.productId,
+                    productName: item.product.name,
+                    ...alert
+                })));
+            }
+        }
+
+        await transaction.commit();
+
+        // Get updated order info
+        const updatedOrder = await customerOrderModel.findByPk(orderId, {
+            include: [
+                {
+                    model: orderPreparerModel,
+                    as: 'preparers',
+                    where: { status: 'working' },
+                    required: false,
+                    include: [{
+                        model: warehouseEmployeeModel,
+                        as: 'warehouseEmployee',
+                        include: [{
+                            model: userModel,
+                            as: 'user',
+                            attributes: ['userId', 'name']
+                        }]
+                    }]
+                }
+            ]
+        });
+
+        return res.status(200).json({
+            message: 'Started order preparation successfully',
+            order: updatedOrder,
+            preparationInfo: {
+                totalItems: order.items.length,
+                itemsWithBatchInfo,
+                batchAlerts,
+                hasMultipleBatches: batchAlerts.some(alert => alert.type === 'MULTIPLE_BATCHES'),
+                hasNearExpiry: batchAlerts.some(alert => alert.type === 'NEAR_EXPIRY'),
+                hasInsufficientStock: batchAlerts.some(alert => alert.type === 'INSUFFICIENT_STOCK'),
+                canAutoComplete: itemsWithBatchInfo.every(item => item.canFulfill),
+                currentPreparers: updatedOrder.preparers.map(p => ({
+                    employeeId: p.warehouseEmployeeId,
+                    employeeName: p.warehouseEmployee.user.name,
+                    startedAt: p.startedAt
+                }))
+            }
+        });
+
+    } catch (error) {
+        await transaction.rollback();
+        console.error('Error starting order preparation:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+/**
+ * @desc    Complete order preparation with batch allocation
+ * @route   POST /api/orders/:id/complete-preparation
+ * @access  Warehouse Employee
+ */
+export const completeOrderPreparation = async (req, res) => {
+    const transaction = await sequelize.transaction();
+
+    try {
+        const { error: idError } = validateOrderId.validate({ id: req.params.id });
+        if (idError) {
+            await transaction.rollback();
+            return res.status(400).json({ message: idError.details[0].message });
+        }
+
+        const { error: bodyError } = completePreparationSchema.validate(req.body);
+        if (bodyError) {
+            await transaction.rollback();
+            return res.status(400).json({ message: bodyError.details[0].message });
+        }
+
+        const orderId = req.params.id;
+        const {
+            warehouseEmployeeId,
+            manualBatchAllocations, // Optional - if provided, use manual method
+            notes
+        } = req.body;
+
+        // Auto-detect preparation method based on request content
+        const preparationMethod = (manualBatchAllocations && manualBatchAllocations.length > 0)
+            ? 'manual_batches'
+            : 'auto_fifo';
+
+        // Get the order with items
+        const order = await customerOrderModel.findByPk(orderId, {
+            include: [
+                {
+                    model: customerOrderItemModel,
+                    as: 'items',
+                    include: [{
+                        model: productModel,
+                        as: 'product'
+                    }]
+                }
+            ]
+        });
+
+        if (!order) {
+            await transaction.rollback();
+            return res.status(404).json({ message: 'Order not found' });
+        }
+
+        if (order.status !== 'Preparing') {
+            await transaction.rollback();
+            return res.status(400).json({
+                message: `Order must be in Preparing status. Current status: ${order.status}`
+            });
+        }
+
+        // Verify this worker is actually preparing this order
+        const preparer = await orderPreparerModel.findOne({
+            where: {
+                orderId,
+                warehouseEmployeeId,
+                status: 'working'
+            }
+        });
+
+        if (!preparer) {
+            await transaction.rollback();
+            return res.status(403).json({
+                message: 'You are not currently preparing this order'
+            });
+        }
+
+        let allBatchAllocations = [];
+        let preparationSummary = [];
+
+        // Process each item based on preparation method
+        for (const item of order.items) {
+            let allocation = [];
+
+            if (preparationMethod === 'auto_fifo') {
+                // Use automatic FIFO allocation
+                const fifoResult = await getFIFOAllocation(item.productId, item.quantity);
+
+                if (!fifoResult.canFulfill) {
+                    await transaction.rollback();
+                    return res.status(400).json({
+                        message: `Cannot fulfill item ${item.product.name}. ${fifoResult.alerts[0]?.message || 'Insufficient stock'}`
+                    });
+                }
+
+                allocation = fifoResult.allocation;
+
+            } else if (preparationMethod === 'manual_batches') {
+                // Use manual batch selection
+                const manualAllocation = manualBatchAllocations?.find(ma => ma.productId === item.productId);
+
+                if (!manualAllocation) {
+                    await transaction.rollback();
+                    return res.status(400).json({
+                        message: `Manual batch allocation required for product ${item.product.name}`
+                    });
+                }
+
+                // Validate manual allocation quantities
+                const totalManualQuantity = manualAllocation.batchAllocations.reduce((sum, ba) => sum + ba.quantity, 0);
+
+                if (totalManualQuantity !== item.quantity) {
+                    await transaction.rollback();
+                    return res.status(400).json({
+                        message: `Manual allocation for ${item.product.name} doesn't match required quantity. Required: ${item.quantity}, Allocated: ${totalManualQuantity}`
+                    });
+                }
+
+                // Verify batch availability
+                for (const batchAlloc of manualAllocation.batchAllocations) {
+                    const batch = await productBatchModel.findByPk(batchAlloc.batchId);
+
+                    if (!batch || batch.productId !== item.productId) {
+                        await transaction.rollback();
+                        return res.status(400).json({
+                            message: `Invalid batch ID ${batchAlloc.batchId} for product ${item.product.name}`
+                        });
+                    }
+
+                    if (batch.quantity < batchAlloc.quantity) {
+                        await transaction.rollback();
+                        return res.status(400).json({
+                            message: `Insufficient quantity in batch ${batch.batchNumber || batch.id}. Available: ${batch.quantity}, Required: ${batchAlloc.quantity}`
+                        });
+                    }
+                }
+
+                allocation = manualAllocation.batchAllocations.map(ba => ({
+                    batchId: ba.batchId,
+                    quantity: ba.quantity
+                }));
+            }
+
+            // Store allocation for batch updates
+            allBatchAllocations.push({
+                productId: item.productId,
+                allocation
+            });
+
+            preparationSummary.push({
+                productId: item.productId,
+                productName: item.product.name,
+                requiredQuantity: item.quantity,
+                allocation: allocation,
+                method: preparationMethod
+            });
+        }
+
+        // Update batch quantities and product quantities
+        for (const itemAllocation of allBatchAllocations) {
+            await updateBatchQuantities(itemAllocation.allocation, transaction);
+
+            // Update total product quantity
+            const product = await productModel.findByPk(itemAllocation.productId);
+            const totalDeducted = itemAllocation.allocation.reduce((sum, alloc) => sum + alloc.quantity, 0);
+
+            await product.update({
+                quantity: Math.max(0, product.quantity - totalDeducted)
+            }, { transaction });
+        }
+
+        // Mark this preparer as completed
+        await preparer.update({
+            status: 'completed',
+            completedAt: new Date(),
+            notes: notes || preparer.notes
+        }, { transaction });
+
+        // Update order status to Prepared and store batch allocation info
+        await order.update({
+            status: 'Prepared',
+            preparationCompletedAt: new Date(),
+            preparationMethod,
+            batchAllocation: JSON.stringify(preparationSummary)
+        }, { transaction });
+
+        await transaction.commit();
+
+        // Get final order state
+        const completedOrder = await customerOrderModel.findByPk(orderId, {
+            include: [
+                {
+                    model: customerModel,
+                    as: 'customer',
+                    attributes: ['id', 'address'],
+                    include: [{
+                        model: userModel,
+                        as: 'user',
+                        attributes: ['userId', 'name', 'phoneNumber']
+                    }]
+                },
+                {
+                    model: customerOrderItemModel,
+                    as: 'items',
+                    include: [{
+                        model: productModel,
+                        as: 'product',
+                        attributes: ['productId', 'name', 'image', 'quantity']
+                    }]
+                },
+                {
+                    model: orderPreparerModel,
+                    as: 'preparers',
+                    include: [{
+                        model: warehouseEmployeeModel,
+                        as: 'warehouseEmployee',
+                        include: [{
+                            model: userModel,
+                            as: 'user',
+                            attributes: ['userId', 'name']
+                        }]
+                    }]
+                }
+            ]
+        });
+
+        return res.status(200).json({
+            message: 'Order preparation completed successfully',
+            order: completedOrder,
+            preparationSummary: {
+                method: preparationMethod,
+                completedBy: preparer.warehouseEmployee?.user?.name,
+                completedAt: preparer.completedAt,
+                items: preparationSummary,
+                totalItems: preparationSummary.length,
+                allPreparers: completedOrder.preparers.map(p => ({
+                    employeeName: p.warehouseEmployee.user.name,
+                    status: p.status,
+                    startedAt: p.startedAt,
+                    completedAt: p.completedAt
+                }))
+            }
+        });
+
+    } catch (error) {
+        await transaction.rollback();
+        console.error('Error completing order preparation:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+/**
+ * @desc    Get batch information for order preparation
+ * @route   GET /api/orders/:id/batch-info
+ * @access  Warehouse Employee
+ */
+export const getOrderBatchInfo = async (req, res) => {
+    try {
+        const { error } = validateOrderId.validate({ id: req.params.id });
+        if (error) {
+            return res.status(400).json({ message: error.details[0].message });
+        }
+
+        const orderId = req.params.id;
+
+        const order = await customerOrderModel.findByPk(orderId, {
+            include: [
+                {
+                    model: customerOrderItemModel,
+                    as: 'items',
+                    include: [{
+                        model: productModel,
+                        as: 'product',
+                        include: [{
+                            model: productBatchModel,
+                            as: 'batches',
+                            where: {
+                                status: 'Active',
+                                quantity: { [Op.gt]: 0 }
+                            },
+                            required: false,
+                            order: [['prodDate', 'ASC'], ['receivedDate', 'ASC']]
+                        }]
+                    }]
+                }
+            ]
+        });
+
+        if (!order) {
+            return res.status(404).json({ message: 'Order not found' });
+        }
+
+        const batchInfo = [];
+
+        for (const item of order.items) {
+            const fifoAllocation = await getFIFOAllocation(item.productId, item.quantity);
+
+            batchInfo.push({
+                productId: item.productId,
+                productName: item.product.name,
+                requiredQuantity: item.quantity,
+                availableQuantity: item.product.quantity,
+                batches: item.product.batches || [],
+                fifoRecommendation: fifoAllocation.allocation || [],
+                alerts: fifoAllocation.alerts || [],
+                canFulfill: fifoAllocation.canFulfill
+            });
+        }
+
+        return res.status(200).json({
+            message: 'Batch information retrieved successfully',
+            orderId,
+            orderStatus: order.status,
+            batchInfo,
+            hasCriticalAlerts: batchInfo.some(item =>
+                item.alerts.some(alert => ['INSUFFICIENT_STOCK', 'NO_STOCK'].includes(alert.type))
+            ),
+            hasMultipleBatches: batchInfo.some(item => item.batches.length > 1)
+        });
+
+    } catch (error) {
+        console.error('Error getting order batch info:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// Export all methods (include all existing methods plus new ones)
+export * from './customerOrder.controller.js'; // This imports all existing methods
