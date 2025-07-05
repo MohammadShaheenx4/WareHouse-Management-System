@@ -8,6 +8,8 @@ import productBatchModel from "../../../DB/Models/productPatch.model.js";
 import warehouseEmployeeModel from "../../../DB/Models/WareHouseEmployee.model.js";
 import userModel from "../../../DB/Models/user.model.js";
 import categoryModel from "../../../DB/Models/category.model.js";
+import deliveryEmployeeModel from "../../../DB/Models/deliveryEmployee.model.js";
+
 import { Op } from "sequelize";
 import sequelize from "../../../DB/Connection.js";
 import { getFIFOAllocation, updateBatchQuantities } from "../../utils/batchManagement.js";
@@ -1320,7 +1322,7 @@ export const cancelOrder = async (req, res) => {
                     message: `Customers cannot cancel order with status '${order.status}'. You can only cancel orders with status: ${customerCancellableStatuses.join(', ')}`
                 });
             }
-        } else if (userRole === 'delivery') {
+        } else if (userRole === 'DeliveryEmployee') {
             // Delivery employee can only cancel orders that are assigned to them and on_theway
             const deliveryEmployee = await deliveryEmployeeModel.findOne({
                 where: { userId: req.user.userId }
@@ -1511,24 +1513,41 @@ const restoreSimpleQuantities = async (orderItems, transaction) => {
  */
 export const getCancelledOrders = async (req, res) => {
     try {
-        const { page = 1, limit = 20, fromDate, toDate, reason } = req.query;
+        const { page = 1, limit = 20, fromDate, toDate, reason, status } = req.query;
 
-        // Build filter object
-        const filter = { status: 'Cancelled' };
+        // Build filter object - include all delivery-started statuses
+        const filter = {
+            status: {
+                [Op.in]: ['on_theway', 'Shipped', 'Cancelled']
+            }
+        };
 
+        // Filter by specific status if provided
+        if (status && ['on_theway', 'Shipped', 'Cancelled'].includes(status)) {
+            filter.status = status;
+        }
+
+        // Filter by cancellation reason (only for cancelled orders)
         if (reason) {
             filter.cancellationReason = reason;
         }
 
-        // Date range filter
+        // Date range filter - use appropriate date field based on status
         if (fromDate || toDate) {
-            filter.cancelledAt = {};
-            if (fromDate) filter.cancelledAt[Op.gte] = new Date(fromDate);
+            const dateFilter = {};
+            if (fromDate) dateFilter[Op.gte] = new Date(fromDate);
             if (toDate) {
                 const endDate = new Date(toDate);
                 endDate.setHours(23, 59, 59, 999);
-                filter.cancelledAt[Op.lte] = endDate;
+                dateFilter[Op.lte] = endDate;
             }
+
+            // Use different date fields based on what we're filtering
+            filter[Op.or] = [
+                { cancelledAt: dateFilter },      // For cancelled orders
+                { deliveryEndTime: dateFilter },  // For shipped orders
+                { deliveryStartTime: dateFilter } // For on_theway orders
+            ];
         }
 
         const offset = (page - 1) * limit;
@@ -1559,25 +1578,64 @@ export const getCancelledOrders = async (req, res) => {
                     model: userModel,
                     as: 'cancelledByUser',
                     attributes: ['userId', 'name'],
-                    foreignKey: 'cancelledBy'
+                    required: false // Make this optional since not all orders are cancelled
+                },
+                {
+                    model: deliveryEmployeeModel,
+                    as: 'deliveryEmployee',
+                    attributes: ['id', 'isAvailable'],
+                    required: false, // Optional since cancelled orders might not have delivery employee
+                    include: [{
+                        model: userModel,
+                        as: 'user',
+                        attributes: ['userId', 'name', 'phoneNumber']
+                    }]
                 }
             ],
             limit: parseInt(limit),
             offset: parseInt(offset),
-            order: [['cancelledAt', 'DESC']]
+            order: [
+                ['status', 'ASC'], // Order by status first (on_theway, then Shipped, then Cancelled)
+                ['deliveryStartTime', 'DESC'], // Then by delivery start time
+                ['cancelledAt', 'DESC'] // Then by cancellation time
+            ]
+        });
+
+        // Add summary statistics
+        const statusCounts = await customerOrderModel.findAll({
+            attributes: [
+                'status',
+                [sequelize.fn('COUNT', sequelize.col('id')), 'count']
+            ],
+            where: {
+                status: { [Op.in]: ['on_theway', 'Shipped', 'Cancelled'] }
+            },
+            group: ['status'],
+            raw: true
+        });
+
+        const summary = {
+            on_theway: 0,
+            Shipped: 0,
+            Cancelled: 0
+        };
+
+        statusCounts.forEach(item => {
+            summary[item.status] = parseInt(item.count);
         });
 
         return res.status(200).json({
-            message: 'Cancelled orders retrieved successfully',
+            message: 'Delivery orders retrieved successfully',
             total: count,
             page: parseInt(page),
             limit: parseInt(limit),
             totalPages: Math.ceil(count / limit),
+            summary: summary,
             orders
         });
 
     } catch (error) {
-        console.error('Error fetching cancelled orders:', error);
+        console.error('Error fetching delivery orders:', error);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
