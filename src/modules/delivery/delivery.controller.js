@@ -1268,7 +1268,10 @@ export const getAllDeliveryEmployees = async (req, res) => {
                 {
                     model: userModel,
                     as: 'user',
-                    attributes: ['userId', 'name', 'email', 'phoneNumber']
+                    attributes: ['userId', 'name', 'email', 'phoneNumber'],
+                    where: {
+                        isActive: true  // Only include active users
+                    }
                 }
             ],
             attributes: [
