@@ -874,21 +874,8 @@ export const completeDelivery = async (req, res) => {
             }, { transaction });
         }
 
-        // Update product quantities (ONLY for successful deliveries)
-        const orderItems = await customerOrderItemModel.findAll({
-            where: { orderId: orderId },
-            include: [{
-                model: productModel,
-                as: 'product'
-            }]
-        });
-
-        for (const item of orderItems) {
-            const newQuantity = parseFloat(item.product.quantity) - parseFloat(item.quantity);
-            await item.product.update({
-                quantity: newQuantity
-            }, { transaction });
-        }
+        // REMOVED: Product quantity reduction (already handled during order preparation)
+        // Stock quantities were already reduced when the order was prepared using batch allocation
 
         await transaction.commit();
 
@@ -906,7 +893,7 @@ export const completeDelivery = async (req, res) => {
                 customerNewBalance: paymentMethod !== 'cash' ?
                     order.customer.accountBalance + debtAmount :
                     order.customer.accountBalance,
-                note: 'Product quantities have been deducted from inventory'
+                note: 'Stock quantities were already reduced during order preparation'
             }
         });
     } catch (error) {

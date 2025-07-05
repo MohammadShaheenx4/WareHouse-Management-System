@@ -872,10 +872,21 @@ export const completeOrderPreparation = async (req, res) => {
 
         const orderId = req.params.id;
         const {
-            warehouseEmployeeId,
             manualBatchAllocations, // Optional - if provided, use manual method
             notes
         } = req.body;
+
+        // Get warehouse employee from authenticated user (same as startOrderPreparation)
+        const warehouseEmployee = await warehouseEmployeeModel.findOne({
+            where: { userId: req.user.userId }
+        });
+
+        if (!warehouseEmployee) {
+            await transaction.rollback();
+            return res.status(403).json({ message: 'Access denied. User is not a warehouse employee' });
+        }
+
+        const warehouseEmployeeId = warehouseEmployee.id;
 
         // Auto-detect preparation method based on request content
         const preparationMethod = (manualBatchAllocations && manualBatchAllocations.length > 0)
@@ -1078,16 +1089,16 @@ export const completeOrderPreparation = async (req, res) => {
             order: completedOrder,
             preparationSummary: {
                 method: preparationMethod,
-                completedBy: preparer.warehouseEmployee?.user?.name,
+                completedBy: warehouseEmployee.user?.name || 'Unknown',
                 completedAt: preparer.completedAt,
                 items: preparationSummary,
                 totalItems: preparationSummary.length,
-                allPreparers: completedOrder.preparers.map(p => ({
+                allPreparers: completedOrder.preparers?.map(p => ({
                     employeeName: p.warehouseEmployee.user.name,
                     status: p.status,
                     startedAt: p.startedAt,
                     completedAt: p.completedAt
-                }))
+                })) || []
             }
         });
 
