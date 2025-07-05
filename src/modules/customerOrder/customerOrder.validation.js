@@ -244,22 +244,11 @@ export const validationUtils = {
     }
 };
 export const cancelOrderSchema = Joi.object({
-    reason: Joi.string().valid(
-        'customer_request',
-        'out_of_stock',
-        'payment_issue',
-        'address_issue',
-        'customer_unavailable',
-        'administrative_decision',
-        'quality_issue',
-        'delivery_emergency',  // New: For delivery employee emergency cancellations
-        'vehicle_breakdown',   // New: For delivery employee vehicle issues
-        'safety_concern',      // New: For delivery employee safety issues
-        'other'
-    ).required()
+    reason: Joi.string().min(3).max(200).required()
         .messages({
             'string.base': 'Cancellation reason must be a string',
-            'any.only': 'Cancellation reason must be one of: customer_request, out_of_stock, payment_issue, address_issue, customer_unavailable, administrative_decision, quality_issue, delivery_emergency, vehicle_breakdown, safety_concern, other',
+            'string.min': 'Cancellation reason must be at least 3 characters long',
+            'string.max': 'Cancellation reason cannot exceed 200 characters',
             'any.required': 'Cancellation reason is required'
         }),
     notes: Joi.string().max(500).optional()
