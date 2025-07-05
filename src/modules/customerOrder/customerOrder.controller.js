@@ -1577,7 +1577,7 @@ export const getCancelledOrders = async (req, res) => {
                 {
                     model: userModel,
                     as: 'cancelledByUser',
-                    attributes: ['userId', 'name'],
+                    attributes: ['userId', 'name', 'email'], // Added email for more info
                     required: false // Make this optional since not all orders are cancelled
                 },
                 {

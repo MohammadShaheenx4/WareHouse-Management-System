@@ -2,7 +2,7 @@ import { Router } from 'express';
 import * as deliveryController from './delivery.controller.js';
 import Auth from "../../middleware/authMiddleware.js";
 
-import fileUpload, { fileValidation } from '../../utils/multer.js';
+import fileUpload, { fileValidation } from "../../utils/multer.js";
 
 const router = Router();
 
@@ -37,6 +37,9 @@ router.put('/location', Auth.isAuthenticated, deliveryController.updateLocation)
 
 // Update estimated delivery time
 router.put('/estimated-time', Auth.isAuthenticated, deliveryController.updateEstimatedTime);
+
+router.put('/:userId', fileUpload(fileValidation.image).single('profilePicture'), deliveryController.updateUser);
+
 
 // Complete delivery
 router.post('/complete-delivery',

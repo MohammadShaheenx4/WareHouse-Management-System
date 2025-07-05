@@ -1477,3 +1477,41 @@ export const getTodayDeliveryStats = async (req, res) => {
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
+export const updateUser = async (req, res) => {
+    const { userId } = req.params; // Get userId from route params
+    const { email, password, phoneNumber, isActive, roleName, sendCode, name } = req.body; // Get data from the request body
+
+    try {
+        // Step 1: Find user by userId
+        const user = await userModel.findOne({ where: { userId } });
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        // Step 2: Update fields if provided in the request body
+        user.email = email || user.email;
+        user.password = password || user.password;
+        user.phoneNumber = phoneNumber || user.phoneNumber;
+        user.isActive = isActive || user.isActive;
+        user.roleName = roleName || user.roleName;
+        user.sendCode = sendCode || user.sendCode;
+        user.name = name || user.name;
+
+        if (req.file) {
+            const { secure_url } = await cloudinary.uploader.upload(req.file.path
+                , { folder: 'warehouse/usersImages' }
+            );
+            user.profilePicture = secure_url;
+
+        };
+        // Step 3: Save the updated user
+        await user.save();
+
+        // Step 4: Return success response
+        return res.status(200).json({ message: 'User updated successfully', user });
+    } catch (error) {
+        console.error('Error updating user:', error);
+        return res.status(500).json({ message: 'An error occurred while updating the user' });
+    }
+};
