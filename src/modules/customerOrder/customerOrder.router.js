@@ -11,7 +11,9 @@ import {
     // NEW: Batch-aware preparation methods
     startOrderPreparation,
     completeOrderPreparation,
-    getOrderBatchInfo
+    getOrderBatchInfo,
+    cancelOrder,
+    getCancelledOrders
 } from "./customerOrder.controller.js";
 import Auth from "../../middleware/authMiddleware.js";
 
@@ -37,5 +39,8 @@ router.get("/:id/batch-info", Auth.isAuthenticated, getOrderBatchInfo);
 
 // Mixed access routes - can be accessed by admin or the customer who owns the order
 router.get("/:id", Auth.isAuthenticated, getOrderById);
+//////////////////cancneled functions ///////////////////////
+router.post("/:id/cancel", Auth.isAuthenticated, cancelOrder);
+router.get("/cancelled", Auth.isAuthenticated, getCancelledOrders);
 
 export default router;

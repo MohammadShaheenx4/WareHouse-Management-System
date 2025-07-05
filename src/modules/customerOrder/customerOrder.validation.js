@@ -21,7 +21,8 @@ export const updateOrderStatusSchema = Joi.object({
         "Prepared",
         "Assigned",
         "on_theway",
-        "Shipped"
+        "Shipped",
+        "Cancelled"  // Add this
     ).required(),
     note: Joi.string().optional()
 });
@@ -242,3 +243,27 @@ export const validationUtils = {
         return true;
     }
 };
+export const cancelOrderSchema = Joi.object({
+    reason: Joi.string().valid(
+        'customer_request',
+        'out_of_stock',
+        'payment_issue',
+        'address_issue',
+        'customer_unavailable',
+        'administrative_decision',
+        'quality_issue',
+        'delivery_emergency',  // New: For delivery employee emergency cancellations
+        'vehicle_breakdown',   // New: For delivery employee vehicle issues
+        'safety_concern',      // New: For delivery employee safety issues
+        'other'
+    ).required()
+        .messages({
+            'string.base': 'Cancellation reason must be a string',
+            'any.only': 'Cancellation reason must be one of: customer_request, out_of_stock, payment_issue, address_issue, customer_unavailable, administrative_decision, quality_issue, delivery_emergency, vehicle_breakdown, safety_concern, other',
+            'any.required': 'Cancellation reason is required'
+        }),
+    notes: Joi.string().max(500).optional()
+        .messages({
+            'string.max': 'Cancellation notes cannot exceed 500 characters'
+        })
+});

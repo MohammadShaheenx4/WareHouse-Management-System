@@ -17,7 +17,8 @@ import {
     validateOrderId,
     getCategoryProductsSchema,
     startPreparationSchema,
-    completePreparationSchema
+    completePreparationSchema,
+    cancelOrderSchema
 } from "./customerOrder.validation.js";
 
 /**
@@ -524,17 +525,73 @@ export const getMyOrders = async (req, res) => {
             order: [['createdAt', 'DESC']]
         });
 
+        // Process orders to include batch details
+        const ordersWithBatchDetails = await Promise.all(orders.map(async (order) => {
+            const orderData = order.get({ plain: true });
+
+            // Add batch details if order has batch allocation
+            if (order.batchAllocation) {
+                try {
+                    const allocationData = JSON.parse(order.batchAllocation);
+
+                    // Process each item to get batch details
+                    for (let i = 0; i < orderData.items.length; i++) {
+                        const item = orderData.items[i];
+                        const itemAllocation = allocationData.find(alloc => alloc.productId === item.productId);
+
+                        if (itemAllocation && itemAllocation.allocation) {
+                            // Get batch details for each allocated batch
+                            const batchDetails = await Promise.all(
+                                itemAllocation.allocation.map(async (batchAlloc) => {
+                                    const batch = await productBatchModel.findByPk(batchAlloc.batchId, {
+                                        attributes: ['id', 'prodDate', 'expDate']
+                                    });
+
+                                    if (batch) {
+                                        return {
+                                            batchId: batch.id,
+                                            quantity: batchAlloc.quantity,
+                                            prodDate: batch.prodDate,
+                                            expDate: batch.expDate
+                                        };
+                                    }
+                                    return null;
+                                })
+                            );
+
+                            // Filter out null values and add to item
+                            orderData.items[i].batchDetails = batchDetails.filter(batch => batch !== null);
+                        } else {
+                            orderData.items[i].batchDetails = [];
+                        }
+                    }
+
+                } catch (parseError) {
+                    console.error('Error parsing batch allocation for order:', order.id, parseError);
+                    orderData.items.forEach(item => {
+                        item.batchDetails = [];
+                    });
+                }
+            } else {
+                // No batch allocation data
+                orderData.items.forEach(item => {
+                    item.batchDetails = [];
+                });
+            }
+
+            return orderData;
+        }));
+
         return res.status(200).json({
             message: 'Orders retrieved successfully',
-            count: orders.length,
-            orders
+            count: ordersWithBatchDetails.length,
+            orders: ordersWithBatchDetails
         });
     } catch (error) {
         console.error('Error fetching customer orders:', error);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
-
 /**
  * @desc    Pay off customer debt
  * @route   POST /api/orders/:id/payDebt
@@ -1183,6 +1240,346 @@ export const getOrderBatchInfo = async (req, res) => {
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
+/**
+ * @desc    Cancel an order and restore inventory
+ * @route   POST /api/orders/:id/cancel
+ * @access  Admin (any status) / Customer (before Prepared) / Delivery (on_theway only)
+ */
+export const cancelOrder = async (req, res) => {
+    const transaction = await sequelize.transaction();
 
+    try {
+        // Validate ID parameter
+        const { error: idError } = validateOrderId.validate({ id: req.params.id });
+        if (idError) {
+            await transaction.rollback();
+            return res.status(400).json({ message: idError.details[0].message });
+        }
+
+        // Validate request body
+        const { error: bodyError } = cancelOrderSchema.validate(req.body);
+        if (bodyError) {
+            await transaction.rollback();
+            return res.status(400).json({ message: bodyError.details[0].message });
+        }
+
+        const orderId = req.params.id;
+        const { reason, notes } = req.body;
+
+        // Get the order with all necessary data
+        const order = await customerOrderModel.findByPk(orderId, {
+            include: [
+                {
+                    model: customerModel,
+                    as: 'customer',
+                    include: [{
+                        model: userModel,
+                        as: 'user',
+                        attributes: ['userId', 'name']
+                    }]
+                },
+                {
+                    model: customerOrderItemModel,
+                    as: 'items',
+                    include: [{
+                        model: productModel,
+                        as: 'product'
+                    }]
+                }
+            ]
+        });
+
+        if (!order) {
+            await transaction.rollback();
+            return res.status(404).json({ message: 'Order not found' });
+        }
+
+        // Check user permissions and cancellation rules
+        const userRole = req.user.roleName;
+
+        if (userRole === 'Admin') {
+            // Admin can cancel any order with any status
+            // No additional checks needed
+        } else if (userRole === 'Customer') {
+            // Customer can only cancel their own orders before Prepared status
+            const customer = await customerModel.findOne({
+                where: { userId: req.user.userId }
+            });
+
+            if (!customer || order.customerId !== customer.id) {
+                await transaction.rollback();
+                return res.status(403).json({
+                    message: 'Access denied. This order does not belong to you'
+                });
+            }
+
+            const customerCancellableStatuses = ['Pending', 'Accepted', 'Preparing'];
+            if (!customerCancellableStatuses.includes(order.status)) {
+                await transaction.rollback();
+                return res.status(400).json({
+                    message: `Customers cannot cancel order with status '${order.status}'. You can only cancel orders with status: ${customerCancellableStatuses.join(', ')}`
+                });
+            }
+        } else if (userRole === 'delivery') {
+            // Delivery employee can only cancel orders that are assigned to them and on_theway
+            const deliveryEmployee = await deliveryEmployeeModel.findOne({
+                where: { userId: req.user.userId }
+            });
+
+            if (!deliveryEmployee) {
+                await transaction.rollback();
+                return res.status(403).json({
+                    message: 'Access denied. User is not a delivery employee'
+                });
+            }
+
+            if (order.deliveryEmployeeId !== deliveryEmployee.id) {
+                await transaction.rollback();
+                return res.status(403).json({
+                    message: 'Access denied. This order is not assigned to you'
+                });
+            }
+
+            if (order.status !== 'on_theway') {
+                await transaction.rollback();
+                return res.status(400).json({
+                    message: `Delivery employees can only cancel orders with status 'on_theway'. Current status: '${order.status}'`
+                });
+            }
+        } else {
+            await transaction.rollback();
+            return res.status(403).json({
+                message: 'Access denied. Insufficient permissions to cancel orders'
+            });
+        }
+
+        // Handle inventory restoration based on order status
+        let inventoryRestored = false;
+        let batchesRestored = [];
+
+        // Restore inventory for all statuses that had quantities reduced
+        const statusesRequiringRestoration = ['Preparing', 'Prepared', 'Assigned', 'on_theway', 'Shipped'];
+
+        if (statusesRequiringRestoration.includes(order.status)) {
+            if (order.status === 'Prepared' || order.status === 'Assigned' || order.status === 'on_theway' || order.status === 'Shipped') {
+                // Order was prepared - need to restore batch allocations
+                if (order.batchAllocation) {
+                    try {
+                        const allocationData = JSON.parse(order.batchAllocation);
+
+                        for (const itemAllocation of allocationData) {
+                            // Restore batch quantities
+                            for (const batchAlloc of itemAllocation.allocation) {
+                                const batch = await productBatchModel.findByPk(batchAlloc.batchId);
+                                if (batch) {
+                                    await batch.update({
+                                        quantity: batch.quantity + batchAlloc.quantity
+                                    }, { transaction });
+
+                                    batchesRestored.push({
+                                        batchId: batchAlloc.batchId,
+                                        quantityRestored: batchAlloc.quantity,
+                                        newBatchQuantity: batch.quantity + batchAlloc.quantity
+                                    });
+                                }
+                            }
+
+                            // Restore total product quantity
+                            const product = await productModel.findByPk(itemAllocation.productId);
+                            if (product) {
+                                const totalRestored = itemAllocation.allocation.reduce(
+                                    (sum, alloc) => sum + alloc.quantity, 0
+                                );
+                                await product.update({
+                                    quantity: product.quantity + totalRestored
+                                }, { transaction });
+                            }
+                        }
+                        inventoryRestored = true;
+                    } catch (parseError) {
+                        console.error('Error parsing batch allocation:', parseError);
+                        // Fallback to simple quantity restoration
+                        await restoreSimpleQuantities(order.items, transaction);
+                        inventoryRestored = true;
+                    }
+                } else {
+                    // No batch allocation data - restore simple quantities
+                    await restoreSimpleQuantities(order.items, transaction);
+                    inventoryRestored = true;
+                }
+            } else if (order.status === 'Preparing') {
+                // Order is being prepared - restore simple quantities (batches not yet allocated)
+                await restoreSimpleQuantities(order.items, transaction);
+                inventoryRestored = true;
+            }
+        }
+        // For 'Pending' and 'Accepted' status, no inventory changes needed
+
+        // Remove debt from customer if it was a debt or partial payment
+        if (order.paymentMethod === 'debt' || order.paymentMethod === 'partial') {
+            const customer = await customerModel.findByPk(order.customerId);
+            if (customer) {
+                const debtAmount = order.totalCost - order.amountPaid;
+                await customer.update({
+                    accountBalance: Math.max(0, customer.accountBalance - debtAmount)
+                }, { transaction });
+            }
+        }
+
+        // Update order to cancelled status
+        await order.update({
+            status: 'Cancelled',
+            cancelledAt: new Date(),
+            cancellationReason: reason,
+            cancelledBy: req.user.userId,
+            note: notes ? `${order.note || ''}\nCancellation Note: ${notes}`.trim() : order.note
+        }, { transaction });
+
+        // Mark any active preparers as cancelled
+        await orderPreparerModel.update({
+            status: 'cancelled'
+        }, {
+            where: {
+                orderId: orderId,
+                status: 'working'
+            },
+            transaction
+        });
+
+        await transaction.commit();
+
+        // Get updated order for response
+        const cancelledOrder = await customerOrderModel.findByPk(orderId, {
+            include: [
+                {
+                    model: customerModel,
+                    as: 'customer',
+                    attributes: ['id', 'address', 'accountBalance'],
+                    include: [{
+                        model: userModel,
+                        as: 'user',
+                        attributes: ['userId', 'name']
+                    }]
+                },
+                {
+                    model: customerOrderItemModel,
+                    as: 'items',
+                    include: [{
+                        model: productModel,
+                        as: 'product',
+                        attributes: ['productId', 'name', 'quantity']
+                    }]
+                }
+            ]
+        });
+
+        return res.status(200).json({
+            message: 'Order cancelled successfully',
+            order: cancelledOrder,
+            cancellationDetails: {
+                reason: reason,
+                cancelledAt: order.cancelledAt,
+                cancelledBy: req.user.name || req.user.userId,
+                inventoryRestored: inventoryRestored,
+                batchesRestored: batchesRestored.length > 0 ? batchesRestored : null,
+                totalItemsRestored: inventoryRestored ? order.items.length : 0
+            }
+        });
+
+    } catch (error) {
+        await transaction.rollback();
+        console.error('Error cancelling order:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// Helper function to restore simple quantities (without batch tracking)
+const restoreSimpleQuantities = async (orderItems, transaction) => {
+    for (const item of orderItems) {
+        const product = await productModel.findByPk(item.productId);
+        if (product) {
+            await product.update({
+                quantity: product.quantity + item.quantity
+            }, { transaction });
+        }
+    }
+};
+/**
+ * @desc    Get all cancelled orders
+ * @route   GET /api/orders/cancelled
+ * @access  Admin
+ */
+export const getCancelledOrders = async (req, res) => {
+    try {
+        const { page = 1, limit = 20, fromDate, toDate, reason } = req.query;
+
+        // Build filter object
+        const filter = { status: 'Cancelled' };
+
+        if (reason) {
+            filter.cancellationReason = reason;
+        }
+
+        // Date range filter
+        if (fromDate || toDate) {
+            filter.cancelledAt = {};
+            if (fromDate) filter.cancelledAt[Op.gte] = new Date(fromDate);
+            if (toDate) {
+                const endDate = new Date(toDate);
+                endDate.setHours(23, 59, 59, 999);
+                filter.cancelledAt[Op.lte] = endDate;
+            }
+        }
+
+        const offset = (page - 1) * limit;
+
+        const { count, rows: orders } = await customerOrderModel.findAndCountAll({
+            where: filter,
+            include: [
+                {
+                    model: customerModel,
+                    as: 'customer',
+                    attributes: ['id', 'address'],
+                    include: [{
+                        model: userModel,
+                        as: 'user',
+                        attributes: ['userId', 'name', 'email']
+                    }]
+                },
+                {
+                    model: customerOrderItemModel,
+                    as: 'items',
+                    include: [{
+                        model: productModel,
+                        as: 'product',
+                        attributes: ['productId', 'name', 'image']
+                    }]
+                },
+                {
+                    model: userModel,
+                    as: 'cancelledByUser',
+                    attributes: ['userId', 'name'],
+                    foreignKey: 'cancelledBy'
+                }
+            ],
+            limit: parseInt(limit),
+            offset: parseInt(offset),
+            order: [['cancelledAt', 'DESC']]
+        });
+
+        return res.status(200).json({
+            message: 'Cancelled orders retrieved successfully',
+            total: count,
+            page: parseInt(page),
+            limit: parseInt(limit),
+            totalPages: Math.ceil(count / limit),
+            orders
+        });
+
+    } catch (error) {
+        console.error('Error fetching cancelled orders:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
 // Export all methods (include all existing methods plus new ones)
 export * from './customerOrder.controller.js'; // This imports all existing methods

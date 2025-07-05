@@ -20,7 +20,7 @@ const customerOrderModel = sequelize.define('Customerorder', {
         }
     },
     status: {
-        type: DataTypes.ENUM('Pending', 'Accepted', 'Rejected', 'Preparing', 'Prepared', 'Assigned', 'on_theway', 'Shipped'),
+        type: DataTypes.ENUM('Pending', 'Accepted', 'Rejected', 'Preparing', 'Prepared', 'Assigned', 'on_theway', 'Shipped', 'Cancelled'),
         defaultValue: 'Pending',
         allowNull: false
     },
@@ -49,7 +49,7 @@ const customerOrderModel = sequelize.define('Customerorder', {
         allowNull: true,
         defaultValue: null
     },
-    // NEW: Multiple warehouse employees can prepare the same order
+    // Preparation tracking fields
     preparationStartedAt: {
         type: DataTypes.DATE,
         allowNull: true,
@@ -60,13 +60,13 @@ const customerOrderModel = sequelize.define('Customerorder', {
         allowNull: true,
         comment: 'Timestamp when order preparation was completed'
     },
-    // NEW: JSON field to store batch allocation details
+    // JSON field to store batch allocation details
     batchAllocation: {
         type: DataTypes.TEXT,
         allowNull: true,
         comment: 'JSON string storing batch allocation details for preparation'
     },
-    // NEW: Preparation method - automatically determined based on request
+    // Preparation method - automatically determined based on request
     preparationMethod: {
         type: DataTypes.ENUM('auto_fifo', 'manual_batches'),
         allowNull: true,
@@ -111,6 +111,26 @@ const customerOrderModel = sequelize.define('Customerorder', {
     deliveryNotes: {
         type: DataTypes.TEXT,
         allowNull: true
+    },
+    // NEW: Cancellation tracking fields
+    cancelledAt: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        comment: 'Timestamp when order was cancelled'
+    },
+    cancellationReason: {
+        type: DataTypes.STRING(500),
+        allowNull: true,
+        comment: 'Reason for order cancellation'
+    },
+    cancelledBy: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        references: {
+            model: 'user',
+            key: 'userId'
+        },
+        comment: 'User who cancelled the order'
     }
 }, {
     tableName: 'customerorders',
@@ -137,6 +157,17 @@ customerOrderModel.belongsTo(deliveryEmployeeModel, {
 deliveryEmployeeModel.hasMany(customerOrderModel, {
     foreignKey: 'deliveryEmployeeId',
     as: 'assignedOrders'
+});
+
+// NEW: Cancellation tracking association
+customerOrderModel.belongsTo(userModel, {
+    foreignKey: 'cancelledBy',
+    as: 'cancelledByUser'
+});
+
+userModel.hasMany(customerOrderModel, {
+    foreignKey: 'cancelledBy',
+    as: 'cancelledOrders'
 });
 
 export default customerOrderModel;
