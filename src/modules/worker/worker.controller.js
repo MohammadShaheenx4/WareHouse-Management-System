@@ -11,6 +11,8 @@ import supplierModel from "../../../DB/Models/supplier.model.js";
 import productModel from "../../../DB/Models/product.model.js";
 import userModel from "../../../DB/Models/user.model.js";
 import productBatchModel from "../../../DB/Models/productPatch.model.js";
+import orderPreparerModel from "../../../DB/Models/orderpreparer.model.js";
+
 import { Op } from "sequelize";
 import {
     prepareCustomerOrderSchema,
@@ -55,9 +57,13 @@ export const getPendingCustomerOrders = async (req, res) => {
             return res.status(403).json({ message: 'Access denied. User is not a warehouse employee' });
         }
 
-        // Get orders with status 'Accepted'
+        // Get orders with status 'Accepted', 'Preparing', or 'Prepared'
         const pendingOrders = await customerOrderModel.findAll({
-            where: { status: 'Accepted' },
+            where: {
+                status: {
+                    [Op.in]: ['Accepted', 'Preparing', 'Prepared']
+                }
+            },
             include: [
                 {
                     model: customerModel,
@@ -77,13 +83,62 @@ export const getPendingCustomerOrders = async (req, res) => {
                         as: 'product',
                         attributes: ['productId', 'name', 'image', 'quantity']
                     }]
+                },
+                // NEW: Include preparers information for orders being prepared
+                {
+                    model: orderPreparerModel,
+                    as: 'preparers',
+                    required: false, // Left join - include even if no preparers
+                    where: { status: 'working' }, // Only active preparers
+                    include: [{
+                        model: warehouseEmployeeModel,
+                        as: 'warehouseEmployee',
+                        include: [{
+                            model: userModel,
+                            as: 'user',
+                            attributes: ['userId', 'name']
+                        }]
+                    }]
                 }
             ],
             order: [['createdAt', 'ASC']] // Oldest first
         });
 
+        // Group orders by status for better organization
+        const ordersByStatus = {
+            Accepted: [],
+            Preparing: [],
+            Prepared: []
+        };
+
+        pendingOrders.forEach(order => {
+            ordersByStatus[order.status].push({
+                ...order.toJSON(),
+                // Add preparation info for better UI display
+                preparationInfo: order.status === 'Preparing' ? {
+                    startedAt: order.preparationStartedAt,
+                    currentPreparers: order.preparers?.map(p => ({
+                        employeeId: p.warehouseEmployeeId,
+                        employeeName: p.warehouseEmployee.user.name,
+                        startedAt: p.startedAt
+                    })) || []
+                } : null,
+                isCompleted: order.status === 'Prepared',
+                canStartPreparation: order.status === 'Accepted',
+                isBeingPrepared: order.status === 'Preparing'
+            });
+        });
+
         return res.status(200).json({
-            count: pendingOrders.length,
+            message: 'Pending orders retrieved successfully',
+            totalCount: pendingOrders.length,
+            statusCounts: {
+                accepted: ordersByStatus.Accepted.length,
+                preparing: ordersByStatus.Preparing.length,
+                prepared: ordersByStatus.Prepared.length
+            },
+            ordersByStatus,
+            // Also return flat list for backward compatibility
             pendingOrders
         });
     } catch (error) {
