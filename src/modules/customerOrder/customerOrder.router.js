@@ -13,7 +13,9 @@ import {
     completeOrderPreparation,
     getOrderBatchInfo,
     cancelOrder,
-    getCancelledOrders
+    getCancelledOrders,
+    getCustomerOrderHistory,
+    getAllCustomers
 } from "./customerOrder.controller.js";
 import Auth from "../../middleware/authMiddleware.js";
 
@@ -38,7 +40,8 @@ router.post("/:id/complete-preparation", Auth.isAuthenticated, completeOrderPrep
 router.get("/:id/batch-info", Auth.isAuthenticated, getOrderBatchInfo);
 
 router.get("/all-orders", Auth.isAuthenticated, getCancelledOrders);
-
+router.get("/customer/:customerId/history", Auth.isAuthenticated, getCustomerOrderHistory);
+router.get("/customers", Auth.isAuthenticated, getAllCustomers);
 // Mixed access routes - can be accessed by admin or the customer who owns the order
 router.get("/:id", Auth.isAuthenticated, getOrderById);
 //////////////////cancneled functions ///////////////////////

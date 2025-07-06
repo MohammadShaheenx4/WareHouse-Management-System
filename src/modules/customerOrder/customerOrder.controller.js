@@ -1639,5 +1639,474 @@ export const getCancelledOrders = async (req, res) => {
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
+
+/**
+ * @desc    Get order history for a specific customer by customer ID
+ * @route   GET /api/orders/customer/:customerId/history
+ * @access  Admin (or Customer viewing their own orders)
+ */
+export const getCustomerOrderHistory = async (req, res) => {
+    try {
+        const { customerId } = req.params;
+
+
+
+        // Check if customer exists
+        const customer = await customerModel.findByPk(customerId, {
+            include: [{
+                model: userModel,
+                as: 'user',
+                attributes: ['userId', 'name', 'email', 'phoneNumber', 'registrationDate']
+            }]
+        });
+
+        if (!customer) {
+            return res.status(404).json({ message: 'Customer not found' });
+        }
+
+        // Check permissions - Admin can view any customer's orders, customers can only view their own
+        if (req.user.roleName !== 'Admin') {
+            // If not admin, check if the customer is viewing their own orders
+            const requestingCustomer = await customerModel.findOne({
+                where: { userId: req.user.userId }
+            });
+
+            if (!requestingCustomer || requestingCustomer.id !== parseInt(customerId)) {
+                return res.status(403).json({
+                    message: 'Access denied. You can only view your own order history'
+                });
+            }
+        }
+
+        // Get query parameters for filtering and pagination
+        const {
+            status,
+            fromDate,
+            toDate,
+            page = 1,
+            limit = 20,
+            sortBy = 'createdAt',
+            sortOrder = 'DESC'
+        } = req.query;
+
+        // Build filter object
+        const filter = { customerId: parseInt(customerId) };
+
+        // Status filter
+        if (status) {
+            filter.status = status;
+        }
+
+        // Date range filter
+        if (fromDate || toDate) {
+            filter.createdAt = {};
+            if (fromDate) filter.createdAt[Op.gte] = new Date(fromDate);
+            if (toDate) {
+                const endDate = new Date(toDate);
+                endDate.setHours(23, 59, 59, 999); // End of the day
+                filter.createdAt[Op.lte] = endDate;
+            }
+        }
+
+        // Calculate pagination
+        const offset = (parseInt(page) - 1) * parseInt(limit);
+
+        // Get orders with pagination and filtering
+        const { count, rows: orders } = await customerOrderModel.findAndCountAll({
+            where: filter,
+            include: [
+                {
+                    model: customerModel,
+                    as: 'customer',
+                    attributes: ['id', 'address', 'latitude', 'longitude', 'accountBalance'],
+                    include: [{
+                        model: userModel,
+                        as: 'user',
+                        attributes: ['userId', 'name', 'email', 'phoneNumber']
+                    }]
+                },
+                {
+                    model: customerOrderItemModel,
+                    as: 'items',
+                    include: [{
+                        model: productModel,
+                        as: 'product',
+                        attributes: ['productId', 'name', 'image', 'description', 'sellPrice']
+                    }]
+                },
+                {
+                    model: deliveryEmployeeModel,
+                    as: 'deliveryEmployee',
+                    required: false,
+                    include: [{
+                        model: userModel,
+                        as: 'user',
+                        attributes: ['userId', 'name', 'phoneNumber']
+                    }]
+                },
+                {
+                    model: userModel,
+                    as: 'cancelledByUser',
+                    required: false,
+                    attributes: ['userId', 'name']
+                }
+            ],
+            limit: parseInt(limit),
+            offset: offset,
+            order: [[sortBy, sortOrder.toUpperCase()]],
+            distinct: true // Important for accurate count with includes
+        });
+
+        // Process orders to include batch details if available
+        const ordersWithDetails = await Promise.all(orders.map(async (order) => {
+            const orderData = order.get({ plain: true });
+
+            // Add batch details if order has batch allocation
+            if (order.batchAllocation) {
+                try {
+                    const allocationData = JSON.parse(order.batchAllocation);
+
+                    // Process each item to get batch details
+                    for (let i = 0; i < orderData.items.length; i++) {
+                        const item = orderData.items[i];
+                        const itemAllocation = allocationData.find(alloc => alloc.productId === item.productId);
+
+                        if (itemAllocation && itemAllocation.allocation) {
+                            // Get batch details for each allocated batch
+                            const batchDetails = await Promise.all(
+                                itemAllocation.allocation.map(async (batchAlloc) => {
+                                    const batch = await productBatchModel.findByPk(batchAlloc.batchId, {
+                                        attributes: ['id', 'prodDate', 'expDate', 'batchNumber']
+                                    });
+
+                                    if (batch) {
+                                        return {
+                                            batchId: batch.id,
+                                            batchNumber: batch.batchNumber,
+                                            quantity: batchAlloc.quantity,
+                                            prodDate: batch.prodDate,
+                                            expDate: batch.expDate
+                                        };
+                                    }
+                                    return null;
+                                })
+                            );
+
+                            // Filter out null values and add to item
+                            orderData.items[i].batchDetails = batchDetails.filter(batch => batch !== null);
+                        } else {
+                            orderData.items[i].batchDetails = [];
+                        }
+                    }
+
+                } catch (parseError) {
+                    console.error('Error parsing batch allocation for order:', order.id, parseError);
+                    orderData.items.forEach(item => {
+                        item.batchDetails = [];
+                    });
+                }
+            } else {
+                // No batch allocation data
+                orderData.items.forEach(item => {
+                    item.batchDetails = [];
+                });
+            }
+
+            return orderData;
+        }));
+
+        // Calculate summary statistics
+        const statusCounts = await customerOrderModel.findAll({
+            attributes: [
+                'status',
+                [sequelize.fn('COUNT', sequelize.col('id')), 'count'],
+                [sequelize.fn('SUM', sequelize.col('totalCost')), 'totalValue']
+            ],
+            where: { customerId: parseInt(customerId) },
+            group: ['status'],
+            raw: true
+        });
+
+        const summary = {
+            totalOrders: count,
+            statusBreakdown: {},
+            totalOrderValue: 0
+        };
+
+        statusCounts.forEach(item => {
+            summary.statusBreakdown[item.status] = {
+                count: parseInt(item.count),
+                totalValue: parseFloat(item.totalValue) || 0
+            };
+            summary.totalOrderValue += parseFloat(item.totalValue) || 0;
+        });
+
+        return res.status(200).json({
+            message: 'Customer order history retrieved successfully',
+            customer: {
+                id: customer.id,
+                address: customer.address,
+                latitude: customer.latitude,
+                longitude: customer.longitude,
+                accountBalance: customer.accountBalance,
+                user: customer.user
+            },
+            orders: ordersWithDetails,
+            pagination: {
+                currentPage: parseInt(page),
+                totalPages: Math.ceil(count / parseInt(limit)),
+                totalOrders: count,
+                limit: parseInt(limit),
+                hasNextPage: parseInt(page) < Math.ceil(count / parseInt(limit)),
+                hasPrevPage: parseInt(page) > 1
+            },
+            summary,
+            filters: {
+                status: status || 'all',
+                fromDate: fromDate || null,
+                toDate: toDate || null,
+                sortBy,
+                sortOrder
+            }
+        });
+
+    } catch (error) {
+        console.error('Error fetching customer order history:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+
+/**
+ * @desc    Get all customers
+ * @route   GET /api/orders/customers
+ * @access  Admin
+ */
+export const getAllCustomers = async (req, res) => {
+    try {
+        // Check if user is admin
+        if (req.user.roleName !== 'Admin') {
+            return res.status(403).json({
+                message: 'Access denied. Only admins can view all customers'
+            });
+        }
+
+        // Get query parameters for filtering and pagination
+        const {
+            search,
+            isActive,
+            hasOrders,
+            minBalance,
+            maxBalance,
+            page = 1,
+            limit = 20,
+            sortBy = 'createdAt',
+            sortOrder = 'DESC'
+        } = req.query;
+
+        // Validate query parameters
+
+
+        // Build filter object for user table
+        const userFilter = {
+            roleName: 'Customer'
+        };
+
+        // Build filter object for customer table
+        const customerFilter = {};
+
+        // Search filter (name, email, phone)
+        if (search) {
+            userFilter[Op.or] = [
+                { name: { [Op.iLike]: `%${search}%` } },
+                { email: { [Op.iLike]: `%${search}%` } },
+                { phoneNumber: { [Op.iLike]: `%${search}%` } }
+            ];
+        }
+
+        // Active status filter
+        if (isActive) {
+            userFilter.isActive = isActive;
+        }
+
+        // Account balance filter
+        if (minBalance !== undefined) {
+            customerFilter.accountBalance = { [Op.gte]: parseFloat(minBalance) };
+        }
+        if (maxBalance !== undefined) {
+            customerFilter.accountBalance = {
+                ...customerFilter.accountBalance,
+                [Op.lte]: parseFloat(maxBalance)
+            };
+        }
+
+        // Calculate pagination
+        const offset = (parseInt(page) - 1) * parseInt(limit);
+
+        // Get customers with user information
+        const { count, rows: customers } = await customerModel.findAndCountAll({
+            where: customerFilter,
+            include: [
+                {
+                    model: userModel,
+                    as: 'user',
+                    where: userFilter,
+                    attributes: [
+                        'userId', 'name', 'email', 'phoneNumber',
+                        'isActive', 'registrationDate', 'profilePicture'
+                    ]
+                }
+            ],
+            limit: parseInt(limit),
+            offset: offset,
+            order: [
+                // Handle sorting - if sortBy is from user table, specify the association
+                sortBy === 'name' || sortBy === 'email' || sortBy === 'registrationDate' || sortBy === 'isActive'
+                    ? [{ model: userModel, as: 'user' }, sortBy, sortOrder.toUpperCase()]
+                    : [sortBy === 'createdAt' ? [{ model: userModel, as: 'user' }, 'registrationDate', sortOrder.toUpperCase()] : [sortBy, sortOrder.toUpperCase()]]
+            ],
+            distinct: true // Important for accurate count with includes
+        });
+
+        // If hasOrders filter is specified, we need to check order counts
+        let filteredCustomers = customers;
+        if (hasOrders !== undefined) {
+            const customersWithOrderCounts = await Promise.all(
+                customers.map(async (customer) => {
+                    const orderCount = await customerOrderModel.count({
+                        where: { customerId: customer.id }
+                    });
+
+                    customer.dataValues.orderCount = orderCount;
+
+                    // Filter based on hasOrders parameter
+                    if (hasOrders === 'true' && orderCount > 0) return customer;
+                    if (hasOrders === 'false' && orderCount === 0) return customer;
+                    if (hasOrders === undefined) return customer;
+
+                    return null;
+                })
+            );
+
+            filteredCustomers = customersWithOrderCounts.filter(customer => customer !== null);
+        } else {
+            // Add order count for all customers
+            filteredCustomers = await Promise.all(
+                customers.map(async (customer) => {
+                    const orderCount = await customerOrderModel.count({
+                        where: { customerId: customer.id }
+                    });
+                    customer.dataValues.orderCount = orderCount;
+                    return customer;
+                })
+            );
+        }
+
+        // Calculate summary statistics
+        const totalCustomers = await customerModel.count({
+            include: [{
+                model: userModel,
+                as: 'user',
+                where: { roleName: 'Customer' }
+            }]
+        });
+
+        const activeCustomers = await customerModel.count({
+            include: [{
+                model: userModel,
+                as: 'user',
+                where: {
+                    roleName: 'Customer',
+                    isActive: 'Active'
+                }
+            }]
+        });
+
+        const customersWithOrders = await customerModel.count({
+            include: [
+                {
+                    model: userModel,
+                    as: 'user',
+                    where: { roleName: 'Customer' }
+                },
+                {
+                    model: customerOrderModel,
+                    as: 'orders',
+                    required: true // INNER JOIN - only customers with orders
+                }
+            ],
+            distinct: true
+        });
+
+        // Get total account balance
+        const balanceResult = await customerModel.findAll({
+            attributes: [
+                [sequelize.fn('SUM', sequelize.col('accountBalance')), 'totalBalance'],
+                [sequelize.fn('AVG', sequelize.col('accountBalance')), 'averageBalance']
+            ],
+            include: [{
+                model: userModel,
+                as: 'user',
+                where: { roleName: 'Customer' },
+                attributes: []
+            }],
+            raw: true
+        });
+
+        const summary = {
+            totalCustomers,
+            activeCustomers,
+            inactiveCustomers: totalCustomers - activeCustomers,
+            customersWithOrders,
+            customersWithoutOrders: totalCustomers - customersWithOrders,
+            totalAccountBalance: parseFloat(balanceResult[0]?.totalBalance) || 0,
+            averageAccountBalance: parseFloat(balanceResult[0]?.averageBalance) || 0
+        };
+
+        return res.status(200).json({
+            message: 'Customers retrieved successfully',
+            customers: filteredCustomers.map(customer => ({
+                id: customer.id,
+                address: customer.address,
+                latitude: customer.latitude,
+                longitude: customer.longitude,
+                accountBalance: customer.accountBalance,
+                orderCount: customer.dataValues.orderCount || 0,
+                user: {
+                    userId: customer.user.userId,
+                    name: customer.user.name,
+                    email: customer.user.email,
+                    phoneNumber: customer.user.phoneNumber,
+                    isActive: customer.user.isActive,
+                    registrationDate: customer.user.registrationDate,
+                    profilePicture: customer.user.profilePicture
+                }
+            })),
+            pagination: {
+                currentPage: parseInt(page),
+                totalPages: Math.ceil(count / parseInt(limit)),
+                totalCustomers: count,
+                limit: parseInt(limit),
+                hasNextPage: parseInt(page) < Math.ceil(count / parseInt(limit)),
+                hasPrevPage: parseInt(page) > 1
+            },
+            summary,
+            filters: {
+                search: search || null,
+                isActive: isActive || 'all',
+                hasOrders: hasOrders || 'all',
+                minBalance: minBalance || null,
+                maxBalance: maxBalance || null,
+                sortBy,
+                sortOrder
+            }
+        });
+
+    } catch (error) {
+        console.error('Error fetching customers:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
 // Export all methods (include all existing methods plus new ones)
 export * from './customerOrder.controller.js'; // This imports all existing methods
