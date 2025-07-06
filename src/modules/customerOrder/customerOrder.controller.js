@@ -837,7 +837,53 @@ export const startOrderPreparation = async (req, res) => {
         const itemsWithBatchInfo = [];
 
         for (const item of order.items) {
-            const fifoAllocation = await getFIFOAllocation(item.productId, item.quantity);
+            let fifoAllocation;
+            let canFulfill = false;
+            let alerts = [];
+            let preparationType = 'unknown';
+
+            try {
+                // First, try to get FIFO allocation from batches
+                fifoAllocation = await getFIFOAllocation(item.productId, item.quantity);
+                canFulfill = fifoAllocation.canFulfill;
+                alerts = fifoAllocation.alerts || [];
+                preparationType = 'batch_tracking';
+            } catch (error) {
+                console.log(`FIFO allocation failed for product ${item.productId}, checking product quantity directly`);
+                fifoAllocation = { allocation: [], canFulfill: false, alerts: [] };
+            }
+
+            // If FIFO allocation failed or returned insufficient stock, check product quantity directly
+            if (!canFulfill) {
+                // Check if product has sufficient quantity (fallback for products without batches)
+                if (item.product.quantity >= item.quantity) {
+                    canFulfill = true;
+                    preparationType = 'simple_quantity';
+                    alerts = [{
+                        type: 'NO_BATCH_TRACKING',
+                        message: `Product ${item.product.name} will be prepared using simple quantity (no batch tracking)`
+                    }];
+
+                    // Create a simple allocation for products without batches
+                    fifoAllocation = {
+                        allocation: [{
+                            productId: item.productId,
+                            quantity: item.quantity,
+                            source: 'product_quantity'
+                        }],
+                        canFulfill: true,
+                        alerts: alerts
+                    };
+                } else {
+                    // Still insufficient even with product quantity
+                    canFulfill = false;
+                    preparationType = 'insufficient_stock';
+                    alerts = [{
+                        type: 'INSUFFICIENT_STOCK',
+                        message: `Product ${item.product.name} has insufficient stock. Available: ${item.product.quantity}, Required: ${item.quantity}`
+                    }];
+                }
+            }
 
             itemsWithBatchInfo.push({
                 productId: item.productId,
@@ -845,15 +891,17 @@ export const startOrderPreparation = async (req, res) => {
                 requiredQuantity: item.quantity,
                 availableQuantity: item.product.quantity,
                 fifoAllocation,
-                canFulfill: fifoAllocation.canFulfill,
-                alerts: fifoAllocation.alerts || []
+                canFulfill: canFulfill,
+                alerts: alerts,
+                preparationType: preparationType
             });
 
             // Collect all alerts
-            if (fifoAllocation.alerts && fifoAllocation.alerts.length > 0) {
-                batchAlerts.push(...fifoAllocation.alerts.map(alert => ({
+            if (alerts && alerts.length > 0) {
+                batchAlerts.push(...alerts.map(alert => ({
                     productId: item.productId,
                     productName: item.product.name,
+                    preparationType: preparationType,
                     ...alert
                 })));
             }
@@ -892,7 +940,13 @@ export const startOrderPreparation = async (req, res) => {
                 hasMultipleBatches: batchAlerts.some(alert => alert.type === 'MULTIPLE_BATCHES'),
                 hasNearExpiry: batchAlerts.some(alert => alert.type === 'NEAR_EXPIRY'),
                 hasInsufficientStock: batchAlerts.some(alert => alert.type === 'INSUFFICIENT_STOCK'),
+                hasNoBatchTracking: batchAlerts.some(alert => alert.type === 'NO_BATCH_TRACKING'),
                 canAutoComplete: itemsWithBatchInfo.every(item => item.canFulfill),
+                preparationTypes: {
+                    batchTracked: itemsWithBatchInfo.filter(item => item.preparationType === 'batch_tracking').length,
+                    simpleQuantity: itemsWithBatchInfo.filter(item => item.preparationType === 'simple_quantity').length,
+                    insufficientStock: itemsWithBatchInfo.filter(item => item.preparationType === 'insufficient_stock').length
+                },
                 currentPreparers: updatedOrder.preparers.map(p => ({
                     employeeId: p.warehouseEmployeeId,
                     employeeName: p.warehouseEmployee.user.name,
@@ -1000,19 +1054,38 @@ export const completeOrderPreparation = async (req, res) => {
         // Process each item based on preparation method
         for (const item of order.items) {
             let allocation = [];
+            let itemPreparationType = 'unknown';
 
             if (preparationMethod === 'auto_fifo') {
-                // Use automatic FIFO allocation
-                const fifoResult = await getFIFOAllocation(item.productId, item.quantity);
+                // Try automatic FIFO allocation first
+                let fifoResult;
+                try {
+                    fifoResult = await getFIFOAllocation(item.productId, item.quantity);
 
-                if (!fifoResult.canFulfill) {
-                    await transaction.rollback();
-                    return res.status(400).json({
-                        message: `Cannot fulfill item ${item.product.name}. ${fifoResult.alerts[0]?.message || 'Insufficient stock'}`
-                    });
+                    if (fifoResult.canFulfill && fifoResult.allocation && fifoResult.allocation.length > 0) {
+                        allocation = fifoResult.allocation;
+                        itemPreparationType = 'batch_tracking';
+                    } else {
+                        throw new Error('FIFO allocation insufficient or empty');
+                    }
+                } catch (error) {
+                    console.log(`FIFO allocation failed for product ${item.productId}, using simple quantity deduction`);
+
+                    // Fallback to simple quantity check for products without batches
+                    if (item.product.quantity >= item.quantity) {
+                        allocation = [{
+                            productId: item.productId,
+                            quantity: item.quantity,
+                            source: 'product_quantity'
+                        }];
+                        itemPreparationType = 'simple_quantity';
+                    } else {
+                        await transaction.rollback();
+                        return res.status(400).json({
+                            message: `Cannot fulfill item ${item.product.name}. Available: ${item.product.quantity}, Required: ${item.quantity}`
+                        });
+                    }
                 }
-
-                allocation = fifoResult.allocation;
 
             } else if (preparationMethod === 'manual_batches') {
                 // Use manual batch selection
@@ -1058,12 +1131,14 @@ export const completeOrderPreparation = async (req, res) => {
                     batchId: ba.batchId,
                     quantity: ba.quantity
                 }));
+                itemPreparationType = 'manual_batches';
             }
 
-            // Store allocation for batch updates
+            // Store allocation for updates
             allBatchAllocations.push({
                 productId: item.productId,
-                allocation
+                allocation,
+                preparationType: itemPreparationType
             });
 
             preparationSummary.push({
@@ -1071,21 +1146,35 @@ export const completeOrderPreparation = async (req, res) => {
                 productName: item.product.name,
                 requiredQuantity: item.quantity,
                 allocation: allocation,
-                method: preparationMethod
+                method: preparationMethod,
+                preparationType: itemPreparationType
             });
         }
 
-        // Update batch quantities and product quantities
+        // Update quantities based on preparation type
         for (const itemAllocation of allBatchAllocations) {
-            await updateBatchQuantities(itemAllocation.allocation, transaction);
+            if (itemAllocation.preparationType === 'batch_tracking' || itemAllocation.preparationType === 'manual_batches') {
+                // Update batch quantities for products with batch tracking
+                await updateBatchQuantities(itemAllocation.allocation, transaction);
+            } else if (itemAllocation.preparationType === 'simple_quantity') {
+                // For products without batches, only update product quantity
+                const product = await productModel.findByPk(itemAllocation.productId);
+                const totalDeducted = itemAllocation.allocation.reduce((sum, alloc) => sum + alloc.quantity, 0);
 
-            // Update total product quantity
-            const product = await productModel.findByPk(itemAllocation.productId);
-            const totalDeducted = itemAllocation.allocation.reduce((sum, alloc) => sum + alloc.quantity, 0);
+                await product.update({
+                    quantity: Math.max(0, product.quantity - totalDeducted)
+                }, { transaction });
+            }
 
-            await product.update({
-                quantity: Math.max(0, product.quantity - totalDeducted)
-            }, { transaction });
+            // Always update total product quantity (regardless of batch tracking)
+            if (itemAllocation.preparationType !== 'simple_quantity') {
+                const product = await productModel.findByPk(itemAllocation.productId);
+                const totalDeducted = itemAllocation.allocation.reduce((sum, alloc) => sum + alloc.quantity, 0);
+
+                await product.update({
+                    quantity: Math.max(0, product.quantity - totalDeducted)
+                }, { transaction });
+            }
         }
 
         // Mark this preparer as completed
@@ -1152,6 +1241,11 @@ export const completeOrderPreparation = async (req, res) => {
                 completedAt: preparer.completedAt,
                 items: preparationSummary,
                 totalItems: preparationSummary.length,
+                preparationTypes: {
+                    batchTracked: preparationSummary.filter(item => item.preparationType === 'batch_tracking').length,
+                    simpleQuantity: preparationSummary.filter(item => item.preparationType === 'simple_quantity').length,
+                    manualBatches: preparationSummary.filter(item => item.preparationType === 'manual_batches').length
+                },
                 allPreparers: completedOrder.preparers?.map(p => ({
                     employeeName: p.warehouseEmployee.user.name,
                     status: p.status,
