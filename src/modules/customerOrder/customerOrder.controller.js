@@ -963,7 +963,7 @@ export const startOrderPreparation = async (req, res) => {
 };
 
 /**
- * @desc    Complete order preparation with batch allocation
+ * @desc    Complete order preparation with batch allocation - Mark ALL workers as completed
  * @route   POST /api/orders/:id/complete-preparation
  * @access  Warehouse Employee
  */
@@ -989,7 +989,7 @@ export const completeOrderPreparation = async (req, res) => {
             notes
         } = req.body;
 
-        // Get warehouse employee from authenticated user (same as startOrderPreparation)
+        // Get warehouse employee from authenticated user
         const warehouseEmployee = await warehouseEmployeeModel.findOne({
             where: { userId: req.user.userId }
         });
@@ -1033,7 +1033,7 @@ export const completeOrderPreparation = async (req, res) => {
         }
 
         // Verify this worker is actually preparing this order
-        const preparer = await orderPreparerModel.findOne({
+        const currentPreparer = await orderPreparerModel.findOne({
             where: {
                 orderId,
                 warehouseEmployeeId,
@@ -1041,12 +1041,29 @@ export const completeOrderPreparation = async (req, res) => {
             }
         });
 
-        if (!preparer) {
+        if (!currentPreparer) {
             await transaction.rollback();
             return res.status(403).json({
                 message: 'You are not currently preparing this order'
             });
         }
+
+        // Get ALL workers currently preparing this order
+        const allPreparers = await orderPreparerModel.findAll({
+            where: {
+                orderId,
+                status: 'working'
+            },
+            include: [{
+                model: warehouseEmployeeModel,
+                as: 'warehouseEmployee',
+                include: [{
+                    model: userModel,
+                    as: 'user',
+                    attributes: ['userId', 'name']
+                }]
+            }]
+        });
 
         let allBatchAllocations = [];
         let preparationSummary = [];
@@ -1177,24 +1194,47 @@ export const completeOrderPreparation = async (req, res) => {
             }
         }
 
-        // Mark this preparer as completed
-        await preparer.update({
+        // 🆕 MARK ALL WORKERS AS COMPLETED - This is the key change!
+        const completionTime = new Date();
+        const completedBy = warehouseEmployee.user?.name || 'Unknown';
+
+        // Update all preparers working on this order to completed status
+        await orderPreparerModel.update({
             status: 'completed',
-            completedAt: new Date(),
-            notes: notes || preparer.notes
-        }, { transaction });
+            completedAt: completionTime,
+            notes: sequelize.fn('COALESCE',
+                sequelize.fn('CONCAT',
+                    sequelize.col('notes'),
+                    sequelize.literal(`' | Completed by: ${completedBy}'`)
+                ),
+                `Completed by: ${completedBy}`
+            )
+        }, {
+            where: {
+                orderId: orderId,
+                status: 'working'
+            },
+            transaction
+        });
+
+        // Mark the current worker's specific notes if provided
+        if (notes) {
+            await currentPreparer.update({
+                notes: `${currentPreparer.notes || ''}\nCompletion notes: ${notes}`.trim()
+            }, { transaction });
+        }
 
         // Update order status to Prepared and store batch allocation info
         await order.update({
             status: 'Prepared',
-            preparationCompletedAt: new Date(),
+            preparationCompletedAt: completionTime,
             preparationMethod,
             batchAllocation: JSON.stringify(preparationSummary)
         }, { transaction });
 
         await transaction.commit();
 
-        // Get final order state
+        // Get final order state with all completed preparers
         const completedOrder = await customerOrderModel.findByPk(orderId, {
             include: [
                 {
@@ -1233,12 +1273,12 @@ export const completeOrderPreparation = async (req, res) => {
         });
 
         return res.status(200).json({
-            message: 'Order preparation completed successfully',
+            message: 'Order preparation completed successfully - All workers freed!',
             order: completedOrder,
             preparationSummary: {
                 method: preparationMethod,
-                completedBy: warehouseEmployee.user?.name || 'Unknown',
-                completedAt: preparer.completedAt,
+                completedBy: completedBy,
+                completedAt: completionTime,
                 items: preparationSummary,
                 totalItems: preparationSummary.length,
                 preparationTypes: {
@@ -1246,12 +1286,18 @@ export const completeOrderPreparation = async (req, res) => {
                     simpleQuantity: preparationSummary.filter(item => item.preparationType === 'simple_quantity').length,
                     manualBatches: preparationSummary.filter(item => item.preparationType === 'manual_batches').length
                 },
-                allPreparers: completedOrder.preparers?.map(p => ({
-                    employeeName: p.warehouseEmployee.user.name,
-                    status: p.status,
-                    startedAt: p.startedAt,
-                    completedAt: p.completedAt
-                })) || []
+                // 🆕 Enhanced worker information
+                workersInvolved: {
+                    totalWorkers: allPreparers.length,
+                    completedBy: completedBy,
+                    allWorkers: allPreparers.map(p => ({
+                        employeeId: p.warehouseEmployeeId,
+                        employeeName: p.warehouseEmployee.user.name,
+                        startedAt: p.startedAt,
+                        completedAt: completionTime, // All workers get same completion time
+                        workedDuration: Math.round((completionTime - new Date(p.startedAt)) / (1000 * 60)) // in minutes
+                    }))
+                }
             }
         });
 
