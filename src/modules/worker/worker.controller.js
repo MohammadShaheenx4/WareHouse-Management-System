@@ -982,8 +982,10 @@ export const receiveSupplierOrder = async (req, res) => {
             orderItemMap[item.productId] = item;
         }
 
-        // Collect batch alerts for all items being received
-        const batchAlerts = [];
+        // Create a map for received quantities from request
+        const receivedQuantityMap = {};
+        const batchNumberMap = {};
+        const notesMap = {};
 
         // Process received quantities if provided (worker can adjust quantities)
         if (items && items.length > 0) {
@@ -1000,16 +1002,20 @@ export const receiveSupplierOrder = async (req, res) => {
                 if (item.receivedQuantity !== undefined && item.receivedQuantity !== null) {
                     updateData.receivedQuantity = item.receivedQuantity;
                     updateData.subtotal = orderItem.costPrice * item.receivedQuantity;
+                    // Store in map for later use
+                    receivedQuantityMap[item.id] = item.receivedQuantity;
                 }
 
                 // Update batch number if provided by worker
                 if (item.batchNumber !== undefined) {
                     updateData.batchNumber = item.batchNumber;
+                    batchNumberMap[item.id] = item.batchNumber;
                 }
 
                 // Update notes if provided by worker
                 if (item.notes !== undefined) {
                     updateData.notes = item.notes;
+                    notesMap[item.id] = item.notes;
                 }
 
                 // Update the order item if there are changes
@@ -1019,6 +1025,9 @@ export const receiveSupplierOrder = async (req, res) => {
             }
         }
 
+        // Collect batch alerts for all items being received
+        const batchAlerts = [];
+
         // Process each accepted item and create batches using supplier-provided dates
         for (const item of order.items) {
             // Only process accepted items
@@ -1026,10 +1035,10 @@ export const receiveSupplierOrder = async (req, res) => {
                 const product = item.product;
 
                 if (product) {
-                    // Get the quantity to add (use receivedQuantity if available, otherwise use ordered quantity)
-                    const quantityToAdd = (item.receivedQuantity !== undefined &&
-                        item.receivedQuantity !== null) ?
-                        item.receivedQuantity : item.quantity;
+                    // FIXED: Get the quantity to add using the received quantity map first
+                    const quantityToAdd = receivedQuantityMap[item.productId] !== undefined
+                        ? receivedQuantityMap[item.productId]
+                        : item.quantity;
 
                     // Use the dates that supplier provided (may be null for some items)
                     const supplierProdDate = item.prodDate || null;
@@ -1054,7 +1063,7 @@ export const receiveSupplierOrder = async (req, res) => {
                                     quantity: quantityToAdd,
                                     prodDate: supplierProdDate,
                                     expDate: supplierExpDate,
-                                    batchNumber: item.batchNumber || null
+                                    batchNumber: batchNumberMap[item.productId] || item.batchNumber || null
                                 }
                             });
                         }
@@ -1067,10 +1076,10 @@ export const receiveSupplierOrder = async (req, res) => {
                         prodDate: supplierProdDate,
                         expDate: supplierExpDate,
                         supplierId: order.supplierId,
-                        supplierOrderId: order.id, // Note: using order.id for the batch
+                        supplierOrderId: order.id,
                         costPrice: item.costPrice,
-                        batchNumber: item.batchNumber || null,
-                        notes: item.notes || `Received from supplier order #${order.id}`
+                        batchNumber: batchNumberMap[item.productId] || item.batchNumber || null,
+                        notes: notesMap[item.productId] || item.notes || `Received from supplier order #${order.id}`
                     }, transaction);
 
                     // Update product total quantity
@@ -1081,7 +1090,6 @@ export const receiveSupplierOrder = async (req, res) => {
                     }, { transaction });
 
                     // Update production and expiration dates on product if supplier provided them
-                    // (Note: Only update if product doesn't have dates or if this is newer)
                     if (supplierProdDate || supplierExpDate) {
                         const updateData = {};
 
