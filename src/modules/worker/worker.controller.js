@@ -252,7 +252,69 @@ export const getCustomerOrderById = async (req, res) => {
         // Get FIFO allocation alerts for each product
         const itemsWithAlerts = [];
         for (const item of order.items) {
-            const fifoInfo = await getFIFOAllocation(item.productId, item.quantity);
+            // First, check if product has batches
+            const productBatches = await productBatchModel.findAll({
+                where: {
+                    productId: item.productId,
+                    quantity: { [Op.gt]: 0 },
+                    status: 'Active'
+                }
+            });
+
+            const hasBatches = productBatches.length > 0;
+            const productQuantity = item.product.quantity;
+
+            let fifoInfo;
+
+            if (hasBatches) {
+                // Product has batches - use FIFO allocation
+                fifoInfo = await getFIFOAllocation(item.productId, item.quantity);
+            } else {
+                // Product has no batches - check direct product quantity
+                if (productQuantity >= item.quantity) {
+                    // Sufficient quantity available in product table
+                    fifoInfo = {
+                        canFulfill: true,
+                        totalAvailable: productQuantity,
+                        requiredQuantity: item.quantity,
+                        allocation: [{
+                            type: 'direct_quantity',
+                            quantity: item.quantity,
+                            availableQuantity: productQuantity,
+                            method: 'simple_deduction'
+                        }],
+                        alerts: [{
+                            type: 'NO_BATCH_MANAGEMENT',
+                            message: `✅ Product has sufficient quantity (${productQuantity}) - no batch management needed`,
+                            severity: 'info'
+                        }],
+                        batchSummary: {
+                            hasBatches: false,
+                            managementType: 'simple_quantity',
+                            note: 'This product uses simple quantity tracking without batch management'
+                        }
+                    };
+                } else {
+                    // Insufficient quantity even in product table
+                    fifoInfo = {
+                        canFulfill: false,
+                        totalAvailable: productQuantity,
+                        requiredQuantity: item.quantity,
+                        allocation: [],
+                        alerts: [{
+                            type: 'INSUFFICIENT_STOCK',
+                            message: `❌ Insufficient stock: Available ${productQuantity}, Required ${item.quantity}`,
+                            severity: 'error'
+                        }],
+                        batchSummary: {
+                            hasBatches: false,
+                            managementType: 'simple_quantity',
+                            shortage: item.quantity - productQuantity
+                        }
+                    };
+                }
+            }
+
             itemsWithAlerts.push({
                 ...item.get({ plain: true }),
                 fifoInfo
