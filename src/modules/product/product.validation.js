@@ -180,7 +180,7 @@ export const updateProductSchema = Joi.object({
         const prodDate = new Date(value.prodDate);
         const expDate = new Date(value.expDate);
 
-        if (expDate <= prodDate) {
+        if (expDate < prodDate) {
             return helpers.error('any.custom', { message: 'Expiry date must be after production date' });
         }
     }
