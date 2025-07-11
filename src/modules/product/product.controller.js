@@ -314,10 +314,41 @@ export const createProduct = async (req, res) => {
  * @route   PUT /api/products/:id
  * @access  Admin
  */
+// Add this middleware before your route
+const handleFileUploadErrors = (uploadMiddleware) => {
+    return (req, res, next) => {
+        uploadMiddleware(req, res, (err) => {
+            if (err) {
+                // Store the error in req object instead of throwing
+                req.fileUploadError = err;
+            }
+            next(); // Always continue to the next middleware
+        });
+    };
+};
+
+// Update your route to use this middleware:
+// router.put('/:id', Auth.adminOnly, handleFileUploadErrors(fileUpload(fileValidation.image).single('image')), controller.updateProduct);
+
 export const updateProduct = async (req, res) => {
     const transaction = await sequelize.transaction();
 
     try {
+        // Handle multer errors gracefully for optional file uploads
+        if (req.fileUploadError) {
+            console.log('File upload error handled:', req.fileUploadError);
+            // For missing field name errors, continue without file
+            if (req.fileUploadError.message === 'Field name missing' ||
+                req.fileUploadError.code === 'LIMIT_UNEXPECTED_FILE') {
+                req.file = null; // Set file to null and continue
+            } else {
+                await transaction.rollback();
+                return res.status(400).json({
+                    message: `File upload error: ${req.fileUploadError.message}`
+                });
+            }
+        }
+
         // Validate ID parameter
         const idValidation = validateProductId.validate({ id: req.params.id });
         if (idValidation.error) {
@@ -332,7 +363,7 @@ export const updateProduct = async (req, res) => {
             return res.status(400).json({ message: error.details[0].message });
         }
 
-        // Validate file if exists
+        // Validate file if exists (only validate if file is present)
         if (req.file) {
             const fileValidationResult = fileValidation.validate(req.file);
             if (fileValidationResult.error) {
@@ -489,14 +520,20 @@ export const updateProduct = async (req, res) => {
             }
         }
 
-        // Upload image to cloudinary if provided
+        // Upload image to cloudinary if provided (only if file exists)
         if (req.file) {
-            const { secure_url } = await cloudinary.uploader.upload(req.file.path, {
-                folder: 'warehouse/productImages'
-            });
+            try {
+                const { secure_url } = await cloudinary.uploader.upload(req.file.path, {
+                    folder: 'warehouse/productImages'
+                });
 
-            // Update product with image URL
-            await product.update({ image: secure_url }, { transaction });
+                // Update product with image URL
+                await product.update({ image: secure_url }, { transaction });
+            } catch (uploadError) {
+                console.error('Cloudinary upload error:', uploadError);
+                await transaction.rollback();
+                return res.status(500).json({ message: 'Failed to upload image' });
+            }
         }
 
         await transaction.commit();
@@ -557,7 +594,6 @@ export const updateProduct = async (req, res) => {
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
-
 // Updated methods to include batch information
 export const getAllProducts = async (req, res) => {
     try {
