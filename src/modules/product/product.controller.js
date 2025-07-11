@@ -356,11 +356,10 @@ export const updateProduct = async (req, res) => {
             return res.status(400).json({ message: idValidation.error.details[0].message });
         }
 
-        // Check if this is an image-only update
+        // Check if we have either body fields or image file
         const hasBodyFields = Object.keys(req.body).length > 0;
         const hasImageFile = req.file !== null && req.file !== undefined;
 
-        // If there's no body data and no image, return error
         if (!hasBodyFields && !hasImageFile) {
             await transaction.rollback();
             return res.status(400).json({
@@ -368,7 +367,7 @@ export const updateProduct = async (req, res) => {
             });
         }
 
-        // Only validate request body if there are fields to validate
+        // Validate request body only if there are fields to validate
         if (hasBodyFields) {
             const { error } = updateProductSchema.validate(req.body);
             if (error) {
@@ -377,7 +376,7 @@ export const updateProduct = async (req, res) => {
             }
         }
 
-        // Validate file if exists (only validate if file is present)
+        // Validate file if exists
         if (req.file) {
             const fileValidationResult = fileValidation.validate(req.file);
             if (fileValidationResult.error) {
@@ -434,7 +433,7 @@ export const updateProduct = async (req, res) => {
             }
         }
 
-        // Process supplier information first (same logic as before)
+        // Process supplier information
         let finalSupplierIds = [];
         if ((supplierIds && Array.isArray(supplierIds)) || (supplierNames && Array.isArray(supplierNames))) {
             // If supplierNames is provided, convert them to supplier IDs
@@ -495,35 +494,31 @@ export const updateProduct = async (req, res) => {
             }
         }
 
-        // Update product fields (only if there are body fields to update)
-        if (hasBodyFields) {
-            const updateData = {
-                ...(name !== undefined && { name }),
-                ...(costPrice !== undefined && { costPrice }),
-                ...(sellPrice !== undefined && { sellPrice }),
-                ...(quantity !== undefined && { quantity }),
-                ...(lowStock !== undefined && { lowStock }),
-                ...(unit !== undefined && { unit }),
-                ...(categoryId !== undefined && { categoryId }),
-                ...(status !== undefined && { status }),
-                ...(barcode !== undefined && { barcode }),
-                ...(warranty !== undefined && { warranty }),
-                ...(prodDate !== undefined && { prodDate }),
-                ...(expDate !== undefined && { expDate }),
-                ...(description !== undefined && { description })
-            };
+        // Update product fields with provided data
+        const updateData = {
+            ...(name !== undefined && { name }),
+            ...(costPrice !== undefined && { costPrice }),
+            ...(sellPrice !== undefined && { sellPrice }),
+            ...(quantity !== undefined && { quantity }),
+            ...(lowStock !== undefined && { lowStock }),
+            ...(unit !== undefined && { unit }),
+            ...(categoryId !== undefined && { categoryId }),
+            ...(status !== undefined && { status }),
+            ...(barcode !== undefined && { barcode }),
+            ...(warranty !== undefined && { warranty }),
+            ...(prodDate !== undefined && { prodDate }),
+            ...(expDate !== undefined && { expDate }),
+            ...(description !== undefined && { description })
+        };
 
-            // Only update if there are actual fields to update
-            if (Object.keys(updateData).length > 0) {
-                await product.update(updateData, { transaction });
-            }
-        }
+        await product.update(updateData, { transaction });
 
         // Handle supplier updates if provided
         if ((supplierIds && Array.isArray(supplierIds)) || (supplierNames && Array.isArray(supplierNames))) {
             // Remove all existing product-supplier associations
             await productSupplierModel.destroy({
-                where: { productId }
+                where: { productId },
+                transaction
             });
 
             // Create new product-supplier associations
@@ -539,7 +534,7 @@ export const updateProduct = async (req, res) => {
             }
         }
 
-        // Upload image to cloudinary if provided (only if file exists)
+        // Upload image to cloudinary if provided
         if (req.file) {
             try {
                 const { secure_url } = await cloudinary.uploader.upload(req.file.path, {
@@ -576,7 +571,7 @@ export const updateProduct = async (req, res) => {
                     model: supplierModel,
                     as: 'suppliers',
                     attributes: ['id', 'userId', 'accountBalance'],
-                    through: { attributes: [] }, // Don't include join table attributes
+                    through: { attributes: [] },
                     include: [
                         {
                             model: userModel,
@@ -604,9 +599,7 @@ export const updateProduct = async (req, res) => {
         return res.status(200).json({
             message: 'Product updated successfully',
             product: updatedProduct,
-            lowStockAlert,
-            updateType: hasBodyFields && hasImageFile ? 'fields_and_image' :
-                hasImageFile ? 'image_only' : 'fields_only'
+            lowStockAlert
         });
 
     } catch (error) {

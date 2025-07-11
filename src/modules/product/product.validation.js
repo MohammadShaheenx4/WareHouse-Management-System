@@ -101,6 +101,7 @@ export const createProductSchema = Joi.object({
 });
 
 // Update product validation schema
+// Update product validation schema - Using the same approach as category
 export const updateProductSchema = Joi.object({
     name: Joi.string().min(3).max(255)
         .messages({
@@ -167,9 +168,13 @@ export const updateProductSchema = Joi.object({
             'number.positive': 'Supplier order ID must be positive'
         })
 }).custom((value, helpers) => {
-    // REMOVED: The requirement for at least one field to be updated
-    // This is now handled in the controller logic to account for image-only updates
-
+    // Allow empty body only if this is an image-only update (handled in controller)
+    // Otherwise require at least one field
+    const hasFields = Object.keys(value).length > 0;
+    if (!hasFields) {
+        // This will be handled in the controller - if there's no file, it will error there
+        return value;
+    }
     // Validate expiry date is after production date
     if (value.prodDate && value.expDate) {
         const prodDate = new Date(value.prodDate);
