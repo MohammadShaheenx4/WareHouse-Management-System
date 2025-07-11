@@ -356,11 +356,25 @@ export const updateProduct = async (req, res) => {
             return res.status(400).json({ message: idValidation.error.details[0].message });
         }
 
-        // Validate request body
-        const { error } = updateProductSchema.validate(req.body);
-        if (error) {
+        // Check if this is an image-only update
+        const hasBodyFields = Object.keys(req.body).length > 0;
+        const hasImageFile = req.file !== null && req.file !== undefined;
+
+        // If there's no body data and no image, return error
+        if (!hasBodyFields && !hasImageFile) {
             await transaction.rollback();
-            return res.status(400).json({ message: error.details[0].message });
+            return res.status(400).json({
+                message: 'Please provide at least one field to update or an image file'
+            });
+        }
+
+        // Only validate request body if there are fields to validate
+        if (hasBodyFields) {
+            const { error } = updateProductSchema.validate(req.body);
+            if (error) {
+                await transaction.rollback();
+                return res.status(400).json({ message: error.details[0].message });
+            }
         }
 
         // Validate file if exists (only validate if file is present)
@@ -481,24 +495,29 @@ export const updateProduct = async (req, res) => {
             }
         }
 
-        // Update product fields
-        const updateData = {
-            ...(name !== undefined && { name }),
-            ...(costPrice !== undefined && { costPrice }),
-            ...(sellPrice !== undefined && { sellPrice }),
-            ...(quantity !== undefined && { quantity }),
-            ...(lowStock !== undefined && { lowStock }),
-            ...(unit !== undefined && { unit }),
-            ...(categoryId !== undefined && { categoryId }),
-            ...(status !== undefined && { status }),
-            ...(barcode !== undefined && { barcode }),
-            ...(warranty !== undefined && { warranty }),
-            ...(prodDate !== undefined && { prodDate }),
-            ...(expDate !== undefined && { expDate }),
-            ...(description !== undefined && { description })
-        };
+        // Update product fields (only if there are body fields to update)
+        if (hasBodyFields) {
+            const updateData = {
+                ...(name !== undefined && { name }),
+                ...(costPrice !== undefined && { costPrice }),
+                ...(sellPrice !== undefined && { sellPrice }),
+                ...(quantity !== undefined && { quantity }),
+                ...(lowStock !== undefined && { lowStock }),
+                ...(unit !== undefined && { unit }),
+                ...(categoryId !== undefined && { categoryId }),
+                ...(status !== undefined && { status }),
+                ...(barcode !== undefined && { barcode }),
+                ...(warranty !== undefined && { warranty }),
+                ...(prodDate !== undefined && { prodDate }),
+                ...(expDate !== undefined && { expDate }),
+                ...(description !== undefined && { description })
+            };
 
-        await product.update(updateData, { transaction });
+            // Only update if there are actual fields to update
+            if (Object.keys(updateData).length > 0) {
+                await product.update(updateData, { transaction });
+            }
+        }
 
         // Handle supplier updates if provided
         if ((supplierIds && Array.isArray(supplierIds)) || (supplierNames && Array.isArray(supplierNames))) {
@@ -585,7 +604,9 @@ export const updateProduct = async (req, res) => {
         return res.status(200).json({
             message: 'Product updated successfully',
             product: updatedProduct,
-            lowStockAlert
+            lowStockAlert,
+            updateType: hasBodyFields && hasImageFile ? 'fields_and_image' :
+                hasImageFile ? 'image_only' : 'fields_only'
         });
 
     } catch (error) {

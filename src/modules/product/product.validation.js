@@ -167,15 +167,8 @@ export const updateProductSchema = Joi.object({
             'number.positive': 'Supplier order ID must be positive'
         })
 }).custom((value, helpers) => {
-    // Ensure at least one field is being updated
-    const updateFields = ['name', 'costPrice', 'sellPrice', 'quantity', 'lowStock', 'unit',
-        'categoryId', 'categoryName', 'status', 'barcode', 'warranty', 'prodDate',
-        'expDate', 'description', 'supplierIds', 'supplierNames', 'supplierOrderId'];
-
-    const hasUpdate = updateFields.some(field => value[field] !== undefined);
-    if (!hasUpdate) {
-        return helpers.error('any.custom', { message: 'Please provide at least one field to update' });
-    }
+    // REMOVED: The requirement for at least one field to be updated
+    // This is now handled in the controller logic to account for image-only updates
 
     // Validate expiry date is after production date
     if (value.prodDate && value.expDate) {
@@ -200,7 +193,6 @@ export const updateProductSchema = Joi.object({
 
     return value;
 });
-
 // Validate product ID parameter
 export const validateProductId = Joi.object({
     id: Joi.number().integer().positive().required()
