@@ -1645,9 +1645,12 @@ export const getProfitChart = async (req, res) => {
             SELECT 
                 DAYOFWEEK(co.createdAt) as dayOfWeek,
                 DAYNAME(co.createdAt) as dayName,
-                COALESCE(SUM(co.amountPaid), 0) as revenue,
+                COALESCE(SUM(co.amountPaid), 0) as cashReceived,
+                COALESCE(SUM(co.totalCost), 0) as totalOrderValue,
                 COALESCE(SUM(coi.quantity * p.costPrice), 0) as costs,
-                COALESCE(SUM(co.amountPaid) - SUM(coi.quantity * p.costPrice), 0) as profit
+                COALESCE(SUM(co.totalCost) - SUM(coi.quantity * p.costPrice), 0) as totalProfit,
+                COALESCE(SUM(co.amountPaid) - SUM(coi.quantity * p.costPrice), 0) as cashProfit,
+                COALESCE(SUM(co.totalCost) - SUM(co.amountPaid), 0) as unrealizedRevenue
             FROM customerorders co
             INNER JOIN customerorderItems coi ON co.id = coi.orderId
             INNER JOIN product p ON coi.productId = p.productId
@@ -1658,10 +1661,10 @@ export const getProfitChart = async (req, res) => {
             ORDER BY DAYOFWEEK(co.createdAt)
         `;
 
-        // Query for previous period total profit
+        // Query for previous period total profit (using totalCost)
         const previousPeriodQuery = `
             SELECT 
-                COALESCE(SUM(co.amountPaid) - SUM(coi.quantity * p.costPrice), 0) as totalProfit
+                COALESCE(SUM(co.totalCost) - SUM(coi.quantity * p.costPrice), 0) as totalProfit
             FROM customerorders co
             INNER JOIN customerorderItems coi ON co.id = coi.orderId
             INNER JOIN product p ON coi.productId = p.productId
@@ -1687,35 +1690,35 @@ export const getProfitChart = async (req, res) => {
             })
         ]);
 
-        // Create day mapping (MySQL DAYOFWEEK: 1=Sunday, 2=Monday, ..., 7=Saturday)
-        const dayMap = {
-            'Saturday': 0,   // dayOfWeek = 7
-            'Sunday': 0,     // dayOfWeek = 1
-            'Monday': 0,     // dayOfWeek = 2
-            'Tuesday': 0,    // dayOfWeek = 3
-            'Wednesday': 0,  // dayOfWeek = 4
-            'Thursday': 0,   // dayOfWeek = 5
-            'Friday': 0      // dayOfWeek = 6
+        // Create day mapping for total profit (the real business profit)
+        const totalProfitMap = {
+            'Saturday': 0,
+            'Sunday': 0,
+            'Monday': 0,
+            'Tuesday': 0,
+            'Wednesday': 0,
+            'Thursday': 0,
+            'Friday': 0
         };
 
         // Fill in actual data
         currentResults.forEach(row => {
-            dayMap[row.dayName] = Math.round(parseFloat(row.profit) * 100) / 100;
+            totalProfitMap[row.dayName] = Math.round(parseFloat(row.totalProfit) * 100) / 100;
         });
 
         // Convert to array format for chart (SAT to FRI)
         const chartData = [
-            dayMap['Saturday'],
-            dayMap['Sunday'],
-            dayMap['Monday'],
-            dayMap['Tuesday'],
-            dayMap['Wednesday'],
-            dayMap['Thursday'],
-            dayMap['Friday']
+            totalProfitMap['Saturday'],
+            totalProfitMap['Sunday'],
+            totalProfitMap['Monday'],
+            totalProfitMap['Tuesday'],
+            totalProfitMap['Wednesday'],
+            totalProfitMap['Thursday'],
+            totalProfitMap['Friday']
         ];
 
-        // Calculate totals and growth
-        const currentPeriodTotal = Object.values(dayMap).reduce((sum, profit) => sum + profit, 0);
+        // Calculate totals and growth based on TOTAL PROFIT (not cash profit)
+        const currentPeriodTotal = Object.values(totalProfitMap).reduce((sum, profit) => sum + profit, 0);
         const previousPeriodTotal = parseFloat(previousResults[0]?.totalProfit || 0);
 
         // Calculate growth percentage
@@ -1726,10 +1729,25 @@ export const getProfitChart = async (req, res) => {
             growth = 100;
         }
 
+        // Calculate additional metrics for better insights
+        const totalCashReceived = currentResults.reduce((sum, row) => sum + parseFloat(row.cashReceived), 0);
+        const totalOrderValue = currentResults.reduce((sum, row) => sum + parseFloat(row.totalOrderValue), 0);
+        const totalUnrealizedRevenue = currentResults.reduce((sum, row) => sum + parseFloat(row.unrealizedRevenue), 0);
+
         return res.status(200).json({
+            // Main profit metric (based on order value, not payments)
             profit: Math.round(currentPeriodTotal * 100) / 100,
             growth: growth,
             data: chartData,
+
+            // Additional insights
+            metrics: {
+                totalOrderValue: Math.round(totalOrderValue * 100) / 100,
+                cashReceived: Math.round(totalCashReceived * 100) / 100,
+                unrealizedRevenue: Math.round(totalUnrealizedRevenue * 100) / 100,
+                collectionRate: totalOrderValue > 0 ? Math.round((totalCashReceived / totalOrderValue) * 100) : 0 // % of orders paid
+            },
+
             dateRange: {
                 start: start.toISOString().split('T')[0],
                 end: end.toISOString().split('T')[0]
