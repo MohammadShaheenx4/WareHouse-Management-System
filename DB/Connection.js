@@ -8,8 +8,8 @@ host:pro.freedb.tech
 */
 var x = 10;
 
-const sequelize = new Sequelize('warehousemanagement', 'shaheen', 'Gf85!m#atWCT6mB', {
-    host: 'pro.freedb.tech',
+const sequelize = new Sequelize('freedb_warehouse_management', 'freedb_shaheen', 'j8BQ#kt9jjDvh%8', {
+    host: 'sql.freedb.tech',
     port: 3306,
     dialect: 'mysql' /* one of 'mysql' | 'postgres' | 'sqlite' | 'mariadb' | 'mssql' | 'db2' | 'snowflake' | 'oracle' */
 });
